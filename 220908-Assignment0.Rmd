@@ -10,8 +10,6 @@ knitr::opts_chunk$set(echo = TRUE)
 ```
 
 
-If you're not in a project in Rstudio, make sure to set your working directory here.
-If you created an RStudio project, then your working directory (the directory with your data and code for these assignments) is the project directory.
 
 ```{r}
 pacman::p_load(tidyverse,
@@ -24,6 +22,9 @@ Load the three data sets, after downloading them from dropbox and saving them in
 * Word data: https://www.dropbox.com/s/8ng1civpl2aux58/token_train.csv?dl=0
 
 ```{r}
+demo<-read_csv("demo_train.csv")
+LU<-read_csv("LU_train.csv")
+token<-read_csv("token_train.csv")
 
 ```
 
@@ -35,6 +36,12 @@ Welcome to real world of messy data :-)
 
 Before being able to combine the data sets we need to make sure the relevant variables have the same names and the same kind of values.
 
+```{r}
+demo
+
+```
+
+
 So:
 
 2a. Identify which variable names do not match (that is are spelled differently) and find a way to transform variable names.
@@ -44,7 +51,14 @@ Tip: look through the chapter on data transformation in R for data science (http
 
 
 ```{r}
+#ID-rename
+demo<-rename(demo, ID = Child.ID)
+LU<-rename(LU, ID = SUBJ)
+token<-rename(token, ID = SUBJ)
 
+#visit-rename
+LU<-rename(LU, Visit = VISIT)
+token<-rename(token, Visit = VISIT)
 ```
 
 2b. Find a way to homogenize the way "visit" is reported (visit1 vs. 1).
@@ -53,6 +67,9 @@ Tip: The stringr package is what you need. str_extract () will allow you to extr
 
 
 ```{r}
+demo$Visit<-str_extract(demo$Visit, "\\d")
+LU$Visit<-str_extract(LU$Visit, "\\d")
+token$Visit<-str_extract(token$Visit, "\\d")
 
 
 ```
@@ -65,7 +82,7 @@ Tip: You can either have one line of code for each child name that is to be chan
 
 
 ```{r}
-
+demo$ID<-str_extract(demo$ID, ".")
 ```
 
 2d. Now that the nitty gritty details of the different data sets are fixed, we want to make a subset of each data set only containig the variables that we wish to use in the final data set.
