@@ -1,0 +1,270 @@
+---
+title: "Assignment 1 - Language development in autistic and neurotypical children"
+output: html_document
+date: "2022-08-15"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Assignment 1  - Language development in autistic and neurotypical children
+
+## Quick recap
+Autism Spectrum Disorder is often related to language impairment. However, this phenomenon has rarely been empirically traced in detail: i) relying on actual naturalistic language production, ii) over extended periods of time.
+
+We therefore videotaped circa 30 kids with ASD and circa 30 comparison kids (matched by linguistic performance at visit 1) for ca. 30 minutes of naturalistic interactions with a parent. We repeated the data collection 6 times per kid, with 4 months between each visit. We transcribed the data and counted: 
+i) the amount of words that each kid uses in each video. Same for the parent.
+ii) the amount of unique words that each kid uses in each video. Same for the parent.
+iii) the amount of morphemes per utterance (Mean Length of Utterance) displayed by each child in each video. Same for the parent. 
+
+This data is in the file you prepared in the previous class, but you can also find it here:https://www.dropbox.com/s/d6eerv6cl6eksf3/data_clean.csv?dl=0
+
+```{r}
+pacman::p_load(tidyverse,brms)
+
+data<-read_csv("data_clean.csv")
+data
+```
+
+
+## The structure of the assignment
+
+We will be spending a few weeks with this assignment. In particular, we will:
+
+Part 1) simulate data in order to better understand the model we need to build, and to better understand how much data we would have to collect to run a meaningful study (precision analysis)
+
+Part 2) analyze our empirical data and interpret the inferential results
+
+Part 3) use your model to predict the linguistic trajectory of new children and assess the performance of the model based on that.
+
+As you work through these parts, you will have to produce a written document (separated from the code) answering the following questions:
+
+Q1 - Briefly describe your simulation process, its goals, and what you have learned from the simulation. Add at least a plot showcasing the results of the simulation. Make a special note on sample size considerations: how much data do you think you will need? what else could you do to increase the precision of your estimates?
+
+Q2 - Briefly describe the empirical data and how they compare to what you learned from the simulation (what can you learn from them?). Briefly describe your model(s) and model quality. Report the findings: how does development differ between autistic and neurotypical children (N.B. remember to report both population and individual level findings)? which additional factors should be included in the model? Add at least one plot showcasing your findings.
+
+Q3 - Given the model(s) from Q2, how well do they predict the data? Discuss both in terms of absolute error in training vs testing; and in terms of characterizing the new kids' language development as typical or in need of support.
+
+
+Below you can find more detailed instructions for each part of the assignment.
+
+## Part 1 - Simulating data
+
+Before we even think of analyzing the data, we should make sure we understand the problem, and we plan the analysis. To do so, we need to simulate data and analyze the simulated data (where we know the ground truth).
+
+In particular, let's imagine we have n autistic and n neurotypical children. We are simulating their average utterance length (Mean Length of Utterance or MLU) in terms of words, starting at Visit 1 and all the way to Visit 6.
+In other words, we need to define a few parameters:
+- average MLU for ASD (population mean) at Visit 1 and average individual deviation from that (population standard deviation)
+- average MLU for TD (population mean) at Visit 1 and average individual deviation from that (population standard deviation)
+- average change in MLU by visit for ASD (population mean) and average individual deviation from that (population standard deviation)
+- average change in MLU by visit for TD (population mean) and average individual deviation from that (population standard deviation)
+- an error term. Errors could be due to measurement, sampling, all sorts of noise. 
+
+Note that this makes a few assumptions: population means are exact values; change by visit is linear (the same between visit 1 and 2 as between visit 5 and 6). This is fine for the exercise. In real life research, you might want to vary the parameter values much more, relax those assumptions and assess how these things impact your inference.
+
+
+We go through the literature and we settle for some values for these parameters:
+- average MLU for ASD and TD: 1.5 (remember the populations are matched for linguistic ability at first visit)
+- average individual variability in initial MLU for ASD 0.5; for TD 0.3 (remember ASD tends to be more heterogeneous)
+- average change in MLU for ASD: 0.4; for TD 0.6 (ASD is supposed to develop less)
+- average individual variability in change for ASD 0.4; for TD 0.2 (remember ASD tends to be more heterogeneous)
+- error is identified as 0.2
+
+This would mean that on average the difference between ASD and TD participants is 0 at visit 1, 0.2 at visit 2, 0.4 at visit 3, 0.6 at visit 4, 0.8 at visit 5 and 1 at visit 6.
+
+```{r}
+
+#Expected initial MLU
+mu_pre_MLU<-1.5
+sigma_asd<-0.5
+sigma_td<-0.3
+
+#Expected slope
+beta1_td<-0.6
+beta1_asd<-0.4
+sigma_beta_asd<-0.4
+sigma_beta_td<-0.2
+
+#Outcommented log-values I do not undderstand  
+#mu_pre_MLU<-log(1.5)
+#sigma_asd<-log(1.5)-log(1.5-0.5)
+#sigma_td<-log(1.5)-log(1.5-0.3)
+#beta1_td<-0.09
+#beta1_asd<-0.035
+#sigma_beta_asd<-0.18
+#sigma_beta_td<-0.025
+
+
+#Expected error
+epsilon<-(0.2)
+
+
+#Sample size
+n<-60
+v<-6
+
+li<-c(mu_pre_MLU,sigma_asd,sigma_td,beta1_asd,beta1_td,sigma_beta_asd,sigma_beta_td,epsilon)
+
+```
+
+
+```{r}
+
+my_function <- function (n,v, li) {
+#Initial ID-frame
+d<-tibble(ID = rep(1:n, each = v),
+          visit = rep(1:v, times = n),
+          diagnosis = rep(0:1, each=n*3)
+          )
+
+#Simulating data: Individual intercept (with the same mean for all! )
+Ind_b0<-c(rnorm(n/2, mean = li[1], sd = li[2]), 
+          rnorm(n/2, mean = li[1], sd = li[3]))
+
+d<-d %>% 
+  mutate(Indi_b0 = rep(Ind_b0, each = v))
+
+#Simulating data: Individual slope (SAME Through each visit!!!)
+Ind_b1<-c(rnorm(n/2, mean = li[4], sd = li[6]), 
+          rnorm(n/2, mean = li[5], sd = li[7]))
+
+d<-d %>% 
+  mutate(Indi_b1 = rep(Ind_b1, each = v))
+
+
+#Simulating the final data - ASSUMING that the data fit a straight line with minor deviations (e=0.2)
+d<-d %>% 
+  mutate(MLU=rnorm(n*v,mean=Indi_b0+Indi_b1*visit,sd=li[8])
+         )
+
+#d<-d %>% 
+# mutate(MLU=exp(MLU))
+
+d<-d %>% 
+  mutate(diagnosis=as.factor(diagnosis))
+
+return (d)
+}
+
+```
+
+```{r}
+##Final plot
+a<-my_function(20,v,li)
+b<-my_function(30,v,li)
+c<-my_function(46,v,li)
+d<-my_function(60,v,li)
+
+
+my_plot_list<-c(a,b,c,d)
+
+ggplot(c, aes(visit, MLU, color = diagnosis, group = ID)) + 
+  theme_classic() + 
+  geom_point() + 
+  geom_line(alpha = 0.3)
+
+max(d$MLU)
+```
+
+
+Okay, so this looks pretty fine. I'll write my prose on what has just been done:
+Firstly I plotted in the values defined by prior research. These aren't exactly my priors, but as I understand, they are a way of investigating my priors, prior of the experiment. 
+
+All values where assigned values - I heard rumors that they should be log-transformed, but I have chosen NOT to do so, since I for the moment still do not understand why this is necessary. And as my simulations yielded respectable results I consider this a further improvement for later.
+
+First, I created a tibble with identification values (simulated an equal amount of ADS and TD-children). Secondly, I randomly simulated their values based on the information given with rnorm() I found this pretty straight forward. Next, I used the assigned values to calculate MLU - again this was a simulation, where I assume a linear relationship underlying with error of 0.2. My simulation is quite different from my peers in my study group, but I found this to be, that they have calculated different slopes for each visit. 
+
+Overall, nice simulation process. I might still need to understand the necessity of log-transforming my values before exponentiating them up later, but I keep this out for now. 
+
+Next I tried to hardcode my way into experimenting with sample sizes (added the function-clause) for trying the same with different inputs. Underneath I have looked into the effect-size differences for the different sample sizes:
+
+```{r}
+
+ana_func<-function(a) {
+  a1<-a %>% 
+    filter(diagnosis==0)
+  a2<-a %>% 
+    filter(diagnosis==1)
+  
+  ret1<-a1 %>% 
+    group_by(v1=visit) %>% 
+      summarise(diag0=mean(MLU))
+  
+  ret2<-a2 %>% 
+    group_by(v2=visit) %>% 
+      summarise(diag1=mean(MLU))
+  
+  ret<-cbind(ret1,ret2) %>% 
+    mutate(diff=diag1-diag0)
+  
+return(ret)  
+}
+
+ana_func(a)
+ana_func(b)
+ana_func(c)
+ana_func(d)
+```
+
+I'm not sure if this have given me more insight into the sample size needed, because the sampling are as it is. Because of the numbers given as priors the summarising-numbers seem to even each other out, because of the bigger sd of Asd - meaning that a few autists will outperform the neurotypical and thereby 'even out' the summarising numbers. This also means that the sample size is less important than the ability to screen out and deal with potential outliers (even though I may be very wrong on this). 
+
+
+####OKKKKKAAAYYY - moving on in part 1
+With these values in mind, simulate data, plot the data (to check everything is alright); and set up an analysis pipeline.
+Remember the usual bayesian workflow:
+- define the formula
+- define the prior
+- prior predictive checks
+- fit the model
+- model quality checks: traceplots, divergences, rhat, effective samples
+- model quality checks: posterior predictive checks, prior-posterior update checks
+- model comparison
+
+Once the pipeline is in place, loop through different sample sizes to assess how much data you would need to collect. N.B. for inspiration on how to set this up, check the tutorials by Kurz that are linked in the syllabus.
+
+BONUS questions for Part 1: what if the difference between ASD and TD was 0? how big of a sample size would you need? What about different effect sizes, and different error terms?
+
+```{r}
+#Definition of formula - 
+m<- bf(MLU ~ 1 + diagnosis)
+
+
+```
+
+
+
+
+# Part 2 - Strong in the Bayesian ken, you are now ready to analyse the actual data
+
+- Describe your sample (n, age, gender, clinical and cognitive features of the two groups) and critically assess whether the groups (ASD and TD) are balanced. Briefly discuss whether the data is enough given the simulations in part 1.
+- Describe linguistic development (in terms of MLU over time) in TD and ASD children (as a function of group). Discuss the difference (if any) between the two groups.
+- Describe individual differences in linguistic development: do all kids follow the same path? Are all kids reflected by the general trend for their group?
+
+- Include additional predictors in your model of language development (N.B. not other indexes of child language: types and tokens, that'd be cheating). Identify the best model, by conceptual reasoning, model comparison or a mix. Report the model you choose (and name its competitors, if any) and discuss why it's the best model.
+
+```{r}
+
+```
+
+
+Part 3 - From explanation to prediction
+
+N.B. There are several datasets for this exercise, so pay attention to which one you are using!
+
+1. The (training) dataset from last time (the awesome one you produced :-) ).
+2. The (test) datasets on which you can test the models from last time:
+* Demographic and clinical data: https://www.dropbox.com/s/ra99bdvm6fzay3g/demo_test.csv?dl=1
+* Utterance Length data: https://www.dropbox.com/s/uxtqqzl18nwxowq/LU_test.csv?dl=1
+* Word data: https://www.dropbox.com/s/1ces4hv8kh0stov/token_test.csv?dl=1
+
+Relying on the model(s) you trained in part 2 of the exercise, create predictions for the test set and assess how well they do compared to the actual data.
+
+- Discuss the differences in performance of your model in training and testing data. Is the model any good?
+- Let's assume you are a speech therapy clinic. You want to assess whether the kids in your test sample will have a typical (like a TD) development, or they will have a worse one, in which case they should get speech therapy support. What do your predictions tell you about that? Which kids would you provide therapy for? Is the model any good?
+
+```{r}
+
+
+```
+
