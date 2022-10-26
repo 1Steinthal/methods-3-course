@@ -21,7 +21,8 @@ iii) the amount of morphemes per utterance (Mean Length of Utterance) displayed 
 This data is in the file you prepared in the previous class, but you can also find it here:https://www.dropbox.com/s/d6eerv6cl6eksf3/data_clean.csv?dl=0
 
 ```{r}
-pacman::p_load(tidyverse,brms)
+pacman::p_load(tidyverse,brms, cmdstanr)
+
 
 data<-read_csv("data_clean.csv")
 data
@@ -97,8 +98,7 @@ sigma_beta_td<-0.2
 
 
 #Expected error
-epsilon<-(0.2)
-
+epsilon<-0.2
 
 #Sample size
 n<-60
@@ -164,6 +164,7 @@ ggplot(c, aes(visit, MLU, color = diagnosis, group = ID)) +
   geom_point() + 
   geom_line(alpha = 0.3)
 
+
 max(d$MLU)
 ```
 
@@ -171,43 +172,113 @@ max(d$MLU)
 Okay, so this looks pretty fine. I'll write my prose on what has just been done:
 Firstly I plotted in the values defined by prior research. These aren't exactly my priors, but as I understand, they are a way of investigating my priors, prior of the experiment. 
 
-All values where assigned values - I heard rumors that they should be log-transformed, but I have chosen NOT to do so, since I for the moment still do not understand why this is necessary. And as my simulations yielded respectable results I consider this a further improvement for later.
+All values where assigned values - I heard that they should be log-transformed, but I have chosen NOT to do so, since I for the moment still do not understand why this is necessary. And as my simulations yielded respectable results I consider this a further improvement for later. I know my simulations yield slightly negative results, but I consider the log-cost too high currently with my understanding.
 
 First, I created a tibble with identification values (simulated an equal amount of ADS and TD-children). Secondly, I randomly simulated their values based on the information given with rnorm() I found this pretty straight forward. Next, I used the assigned values to calculate MLU - again this was a simulation, where I assume a linear relationship underlying with error of 0.2. My simulation is quite different from my peers in my study group, but I found this to be, that they have calculated different slopes for each visit. 
 
 Overall, nice simulation process. I might still need to understand the necessity of log-transforming my values before exponentiating them up later, but I keep this out for now. 
 
-Next I tried to hardcode my way into experimenting with sample sizes (added the function-clause) for trying the same with different inputs. Underneath I have looked into the effect-size differences for the different sample sizes:
+Next I tried to hsimulate the precision of my estimates and thereby how many subjects I would need to assess a certain width of my slope value for the two groups. 
 
 ```{r}
 
-ana_func<-function(a) {
-  a1<-a %>% 
-    filter(diagnosis==0)
-  a2<-a %>% 
-    filter(diagnosis==1)
+#First make model for a effect size and uncertainty, SE. Then investigate SE when simulated several times. Find optimum for minimum 
+
+d_t_test <- function(d){
+  t<-t.test(MLU ~ diagnosis, data = d, paired = T)
+  d<-tibble(coef = t$estimate,
+          CI_min = t$conf.int[1],
+          CI_max = t$conf.int[2])
   
-  ret1<-a1 %>% 
-    group_by(v1=visit) %>% 
-      summarise(diag0=mean(MLU))
-  
-  ret2<-a2 %>% 
-    group_by(v2=visit) %>% 
-      summarise(diag1=mean(MLU))
-  
-  ret<-cbind(ret1,ret2) %>% 
-    mutate(diff=diag1-diag0)
-  
-return(ret)  
+  return (d)
 }
 
-ana_func(a)
-ana_func(b)
-ana_func(c)
-ana_func(d)
+c<-c(10,20,30,40,50,60,70,80,90,100)
+
+#power_analysis <- function (c,v,li) {
+output<- tibble()
+
+for (i in 1:length(c)) {
+    a<-my_function(c[i],v,li)
+    d<-d_t_test(a)
+    
+    output<- rbind(d,output)
+}
+output<-output %>% 
+  mutate(n = c)
+
+ggplot(output, aes(n, coef))+ 
+   geom_pointrange(aes(ymin = CI_min, ymax=CI_max))
+    
+
 ```
 
-I'm not sure if this have given me more insight into the sample size needed, because the sampling are as it is. Because of the numbers given as priors the summarising-numbers seem to even each other out, because of the bigger sd of Asd - meaning that a few autists will outperform the neurotypical and thereby 'even out' the summarising numbers. This also means that the sample size is less important than the ability to screen out and deal with potential outliers (even though I may be very wrong on this). 
+Okay, I'm really sorry, but I chose to do a t-test, because I cannot see how I can predict based on the code from the Solomon tutorial. And I think this should show the same in the CI-95% confidence interval. 
+
+What this shows is, that a bigger sample size actually yields a smaller effect size. 
+
+I'll try copy-pasting the Solomon Kurz-tutorial to see if this will yield some different results:
+
+```{r}
+n = 50 # participants per condition (change this, clear knitr cache, and re-run)
+
+sim_d <- function(seed, n, effect_size) {
+  # define the means for standardized DVs
+  mu_t <- effect_size
+  mu_c <- 0
+  set.seed(seed)
+
+  d <- tibble(id = seq(1:(2*n)), 
+            group = rep(c("ADS", "NT"), each = n)) %>% 
+      mutate(condition = ifelse(group == "ADS", 0, 1),
+          y = ifelse(group == "ADS", 
+                        rnorm(n, mean = mu_c, sd = 1),
+                        rnorm(n, mean = mu_t, sd = 1)))
+  return(d)
+}
+
+sm_d <- sim_d(123, n, .2) # assume a small effect size (Cohen's d)
+med_d <- sim_d(123, n, .5) # assume a medium effect size
+
+# could add 
+# get default brms prior
+get_prior(data = sm_d, family = gaussian(),
+          y ~ 0 + Intercept + condition) 
+
+fit_sm <- brm(data = sm_d,
+        family = gaussian(),
+        y~0+Intercept+condition, 
+        prior=c(prior(normal(0,10),class=b), prior(student_t(3,0,10),class=sigma)),
+        seed = 123, silent=T)
+```
+```{r}
+
+```
+```{r}
+# define the means
+mu_c <- 0
+mu_t <- 0.5
+
+# determine the group size
+n <- 50
+
+# simulate the data
+set.seed(1)
+d <-
+  tibble(group     = rep(c("control", "treatment"), each = n)) %>% 
+  mutate(treatment = ifelse(group == "control", 0, 1),
+         y         = ifelse(group == "control", 
+                            rnorm(n, mean = mu_c, sd = 1),
+                            rnorm(n, mean = mu_t, sd = 1)))
+# fit the model
+fit <-
+  brm(data = d,
+      family = gaussian,
+      y ~ 0 + Intercept + treatment,
+      prior = c(prior(normal(0, 2), class = b),
+                prior(student_t(3, 1, 1), class = sigma)),
+      seed = 1)
+```
 
 
 ####OKKKKKAAAYYY - moving on in part 1
