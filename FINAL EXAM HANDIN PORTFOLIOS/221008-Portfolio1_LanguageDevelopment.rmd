@@ -1,0 +1,451 @@
+---
+title: "Assignment 1 - Language development in autistic and neurotypical children"
+author: "Study group 9"
+date: "2022-08-15"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r loading packages and setting theme}
+
+pacman::p_load(tidyverse, brms, cmdstanr, ggpubr)
+
+theme_set(theme_minimal())
+
+```
+
+# Part 1
+
+```{r simulating data}
+
+# Assign values
+n <- 360
+visits <- 6
+mu_asd <- log(1.5)
+sigma_asd <- log(1.5) - log(1.5-0.5)
+mu_td <- log(1.5)
+sigma_td <- log(1.5) - log(1.5-0.3)
+mu_visit_asd <- 0.09
+sigma_visit_asd <- 0.035
+mu_visit_td <- 0.18
+sigma_visit_td <- 0.025
+x <- c("ASD", "TD")
+
+# Create data frame
+df <- tibble(ID = rep(1:60, each = 6)) %>%
+  mutate(Visit = rep(1:6, times = 60)) %>% 
+  mutate(Diagnosis = rep(x, each = 180))
+ 
+
+
+# loop intercepts and slopes
+for (i in seq(n)) {
+  df$IndividualIntercept[df$ID == i & df$Diagnosis == "ASD"] <- rnorm(1, mu_asd, sigma_asd)
+  df$IndividualIntercept[df$ID == i & df$Diagnosis == "TD"] <- rnorm(1, mu_td, sigma_td)
+  df$IndividualSlope[df$ID == i & df$Diagnosis == "ASD"] <- rnorm(1, mu_visit_asd, sigma_visit_asd)
+  df$IndividualSlope[df$ID == i & df$Diagnosis == "TD"] <- rnorm(1, mu_visit_td, sigma_visit_td)
+}  
+
+
+# Simulate MLU
+for (i in seq(n)) {
+  df$MLU[i] <- exp(rnorm(1, df$IndividualIntercept[i] + df$IndividualSlope[i] * (df$Visit[i] - 1), sd = 0.2))
+}
+
+# Plot
+ggplot(df, aes(Visit, MLU, color = Diagnosis, group = ID)) + 
+  geom_point() + 
+  geom_line(alpha = 0.3)
+
+# Check MLU
+max(df$MLU)
+min(df$MLU)
+mean(df$MLU)
+
+```
+
+```{r analysing simulated data}
+
+# Define formulas
+m0 <- bf(MLU ~ 1)
+m1 <- bf(MLU ~ 0 + Diagnosis)
+m2 <- bf(MLU ~ 0 + Diagnosis + Diagnosis:Visit)
+m3 <- bf(MLU ~ 0 + Diagnosis + Diagnosis:Visit + (1 + Visit|ID))
+m4 <- bf(MLU ~ 0 + Diagnosis + Diagnosis:Visit + (1 + Visit|gr(ID, by = Diagnosis)))
+
+# Define priors
+p1 <- c(
+  brms::prior(normal(0, 0.1), class = b),
+  brms::prior(normal(0.4, 0.1), class = b, coef = "DiagnosisASD"),
+  brms::prior(normal(0.4, 0.1), class = b, coef = "DiagnosisTD"), 
+  brms::prior(normal(0, 0.25), class = sd, coef = Intercept, group = ID),
+  brms::prior(normal(0, 0.25), class = sd, coef = Visit, group = ID) 
+)  
+
+
+get_prior(m1, data = df)
+
+# Fitting models
+prior_fit <- brm(
+  m3, data = df, prior = p1, sample_prior = "only", backend = "cmdstanr", chains = 2, cores = 2, control = list(adapt_delta = 0.99, max_treedepth = 20), family = lognormal
+)
+
+model_fit <- brm(
+  m3, data = df, prior = p1, sample_prior = T, backend = "cmdstanr", chains = 2, cores = 2, control = list(adapt_delta = 0.99, max_treedepth = 20), family = lognormal
+)
+
+# Checking priors
+pp_check(prior_fit, ndraws = 100)
+
+# Cheking fit
+pp_check(model_fit, ndraws = 100)
+
+
+posterior <- as_draws_df(model_fit)
+
+
+plot1 <- ggplot(posterior) + 
+  geom_histogram(aes(prior_b_DiagnosisASD), fill = "red", color = "black", alpha = 0.3, bins = 50) +
+  geom_histogram(aes(b_DiagnosisASD), fill = "green", color = "black", alpha = 0.3, bins = 50) +
+  geom_histogram(aes(b_DiagnosisTD), fill = "yellow", color = "black", alpha = 0.3, bins = 50) +
+  xlab("Prior-posterior update check on the intercepts")
+
+
+
+plot2 <- ggplot(posterior) + 
+  geom_histogram(aes(prior_sd_ID__Intercept), fill = "red", color = "black", alpha = 0.3, bins = 50) +
+  geom_histogram(aes(sd_ID__Intercept), fill = "green", color = "black", alpha = 0.3, bins = 50) +
+  xlab("Prior-posterior update check on the intercepts")
+
+
+
+plot3 <- ggplot(posterior) + 
+  geom_histogram(aes(`prior_b_DiagnosisASD:Visit`), fill = "red", color = "black", alpha = 0.3, bins = 50) + geom_histogram(aes(`b_DiagnosisASD:Visit`), fill = "green", color = "black", alpha = 0.3, bins = 50) + geom_histogram(aes(`b_DiagnosisTD:Visit`), fill = "yellow", color = "black", alpha = 0.3, bins = 50) + xlab("Prior-posterior update check on the slope by visit")
+
+
+
+plot4 <- ggplot(posterior) + 
+  geom_histogram(aes(prior_sd_ID__Visit), fill = "red", color = "black", alpha = 0.3, bins = 50) +
+  geom_histogram(aes(sd_ID__Visit), fill = "green", color = "black", alpha = 0.3, bins = 50) + 
+  xlab("Prior-posterior update check on the variability of the slope")
+
+
+
+plot5 <- ggplot(posterior) + 
+  geom_histogram(aes(prior_cor_ID), fill = "red", color = "black", alpha = 0.3, bins = 50) +
+  geom_histogram(aes(cor_ID__Intercept__Visit), fill = "green", color = "black", alpha = 0.3, bins = 50) +
+  xlab("Prior-posterior update check on the correlation")
+
+
+# Wrapping them plots
+ggarrange(plot1, plot2, plot3, plot4, plot5, rremove("x.text"), ncol = 2, nrow = 3)
+
+# Model output
+summary(model_fit)
+
+
+```
+
+```{r POWER PRECISION ANALYSIS}
+
+# n_sim <- 100
+# 
+# # this will help us track time
+# t1 <- Sys.time()
+# 
+# # here's the main event!
+# s <-
+#   tibble(seed = 1:n_sim) %>% 
+#   mutate(d = map(seed, generateFunc, n = 60)) %>% 
+#   mutate(model_fit = map2(d, seed, ~update(fit, newdata = .x, seed = .y)))
+# 
+# t2 <- Sys.time()
+# 
+# head(s)
+# 
+# 
+# parameters <-
+#   s %>% 
+#   mutate(treatment = map(model_fit, ~ fixef(.) %>% 
+#                            data.frame() %>% 
+#                            rownames_to_column("parameter"))) %>% 
+#   unnest(treatment)
+# 
+# head(parameters)
+# 
+# 
+# 
+# parameters %>% 
+#   filter(parameter == "DiagnosisASD") %>% 
+#   
+#   ggplot(aes(x = seed, y = Estimate, ymin = Q2.5, ymax = Q97.5)) +
+#   geom_hline(yintercept = c(0, .5), color = "white") +
+#   geom_pointrange(fatten = 1/2) +
+#   labs(x = "seed (i.e., simulation index)",
+#        y = expression(beta[1]))
+# 
+# parameters %>% 
+#   ggplot(aes(x = reorder(seed, Q2.5), y = Estimate, ymin = Q2.5, ymax = Q97.5)) +
+#   geom_hline(yintercept = c(0, .5), color = "white") +
+#   geom_pointrange(fatten = 1/2) +
+#   scale_x_discrete("reordered by the lower level of the 95% intervals", breaks = NULL) +
+#   ylab(expression(beta[1])) +
+#   coord_cartesian(ylim = c(-.5, 1.3))
+
+```
+
+
+```{r PART 2 - POWER ANALYSIS}
+# parameters %>% 
+#   filter(parameter == "DiagnosisASD") %>% 
+#   mutate(check = ifelse(Q2.5 > 0, 1, 0)) %>% 
+#   summarise(power = mean(check))
+# 
+# 
+# s %>% 
+#   mutate(rhat = map(model_fit, rhat)) %>% 
+#   unnest(rhat) %>% 
+#   
+#   ggplot(aes(x = rhat)) +
+#   geom_histogram(bins = 20)
+# 
+# parameters <- parameters %>% 
+#   mutate(width = Q97.5 - Q2.5)
+# 
+# parameters %>% 
+#   ggplot(aes(x = width)) +
+#   geom_histogram(binwidth = .01)
+```
+
+```{r}
+# t1 <- Sys.time()
+# 
+# # here's the main event!
+# s2 <-
+#   tibble(seed = 1:n_sim) %>% 
+#   mutate(d = map(seed, generateFunc, n = 5)) %>% 
+#   mutate(model_fit = map2(d, seed, ~update(fit, newdata = .x, seed = .y)))
+# 
+# t2 <- Sys.time()
+# 
+# parameters2 <-
+#   s2 %>% 
+#   mutate(treatment = map(model_fit, ~ fixef(.) %>% 
+#                            data.frame() %>% 
+#                            rownames_to_column("parameter"))) %>% 
+#   unnest(treatment)
+# 
+# parameters2 %>% 
+#   ggplot(aes(x = reorder(seed, Q2.5), y = Estimate, ymin = Q2.5, ymax = Q97.5)) +
+#   geom_hline(yintercept = c(0, .5), color = "white") +
+#   geom_pointrange(fatten = 1/2) +
+#   scale_x_discrete("reordered by the lower level of the 95% intervals", breaks = NULL) +
+#   ylab(expression(beta[1])) +
+#   coord_cartesian(ylim = c(-.5, 1.3))
+# 
+# parameters2 %>% 
+#   filter(parameter == "DiagnosisASD") %>% 
+#   mutate(check = ifelse(Q2.5 > 0, 1, 0)) %>% 
+#   summarise(power = mean(check))
+```
+
+
+
+
+# Part 2 
+
+
+
+```{r}
+
+# Load data
+real_df <- read_csv("data_clean.csv")
+
+```
+
+```{r}
+
+# Run through analysis pipeline
+
+# Filter CHI_MLU
+real_df <- real_df %>% 
+  filter(CHI_MLU != 0) %>% 
+  filter(CHI_MLU != "na")
+
+# Define formula
+r_m0 <- bf(CHI_MLU ~ 0 + Diagnosis + Diagnosis:Visit + (1 + Visit|Child.ID))
+
+# Define priors
+p2 <- c(
+  brms::prior(normal(0, 0.1), class = b),
+  brms::prior(normal(0.4, 0.1), class = b, coef = "DiagnosisASD"),
+  brms::prior(normal(0.4, 0.1), class = b, coef = "DiagnosisTD"), 
+  brms::prior(normal(0, 0.25), class = sd, coef = Intercept, group = Child.ID),
+  brms::prior(normal(0, 0.25), class = sd, coef = Visit, group = Child.ID) 
+)  
+
+# Fitting priors
+real_prior_fit <- brm(
+  r_m0, data = real_df, prior = p2, sample_prior = "only", backend = "cmdstanr", chains = 2, cores = 2, control = list(adapt_delta = 0.99, max_treedepth = 20), family = lognormal
+)
+
+# Fitting model
+real_model_fit1 <- brm(
+  r_m0, data = real_df, prior = p2, sample_prior = T, backend = "cmdstanr", chains = 2, cores = 2, control = list(adapt_delta = 0.99, max_treedepth = 20), family = lognormal
+)
+
+
+# Check priors
+pp_check(real_prior_fit, ndraws = 100)
+
+# Check model
+pp_check(real_model_fit1, ndraws = 100)
+
+
+posterior2 <- as_draws_df(real_model_fit1)
+
+
+real_plot1 <- ggplot(posterior2) + geom_histogram(aes(prior_b_DiagnosisASD), fill = "red", color = "black", alpha = 0.3, bins = 50) + geom_histogram(aes(b_DiagnosisASD), fill = "green", color = "black", alpha = 0.3, bins = 50) + geom_histogram(aes(b_DiagnosisTD), fill = "yellow", color = "black", alpha = 0.3, bins = 50) + xlab("Prior-posterior update check on the intercepts")
+
+
+
+
+real_plot2 <- ggplot(posterior2) + geom_histogram(aes(prior_sd_Child.ID__Intercept), fill = "red", color = "black", alpha = 0.3, bins = 50) + geom_histogram(aes(sd_Child.ID__Intercept), fill = "green", color = "black", alpha = 0.3, bins = 50) + xlab("Prior-posterior update check on the intercepts")
+
+
+
+real_plot3 <- ggplot(posterior2) + 
+  geom_histogram(aes(`prior_b_DiagnosisASD:Visit`), fill = "red", color = "black", alpha = 0.3, bins = 50) + 
+  geom_histogram(aes(`b_DiagnosisASD:Visit`), fill = "green", color = "black", alpha = 0.3, bins = 50) +
+  geom_histogram(aes(`b_DiagnosisTD:Visit`), fill = "yellow", color = "black", alpha = 0.3, bins = 50) +
+  xlab("Prior-posterior update check on the slope by visit")
+
+
+
+
+real_plot4 <- ggplot(posterior2) + 
+  geom_histogram(aes(prior_sd_Child.ID__Visit), fill = "red", color = "black", alpha = 0.3, bins = 50) +
+  geom_histogram(aes(sd_Child.ID__Visit), fill = "green", color = "black", alpha = 0.3, bins = 50) + 
+  xlab("Prior-posterior update check on the variability of the slope")
+
+
+
+
+real_plot5 <- ggplot(posterior2) + 
+  geom_histogram(aes(prior_cor_Child.ID), fill = "red", color = "black", alpha = 0.3, bins = 50) +
+  geom_histogram(aes(cor_Child.ID__Intercept__Visit), fill = "green", color = "black", alpha = 0.3, bins = 50) +
+  xlab("Prior-posterior update check on the correlation")
+
+
+# Wrapping plots
+ggarrange(real_plot1, real_plot2, real_plot3, real_plot4, real_plot5, rremove("x.text"), ncol = 2, nrow = 3)
+
+# Model output
+summary(real_model_fit1)
+
+```
+
+
+
+```{r Introducing additional predictors and comparing models}
+
+# Defining formulas
+# ind_m1 <- bf(CHI_MLU ~ 0 + Diagnosis + Diagnosis:Visit + Diagnosis:verbalIQ1 + Diagnosis:nonVerbalIQ1 + Diagnosis:Socialization1 + (1 + Visit|Child.ID))
+# 
+# env_m2 <- bf(CHI_MLU ~ 0 + Diagnosis + Diagnosis:Visit + Diagnosis:MOT_MLU + Diagnosis:types_MOT + Diagnosis:tokens_MOT + (1 + Visit|Child.ID))
+# 
+# ind_env_m3 <- bf(CHI_MLU ~ 0 + Diagnosis + Diagnosis:Visit + Diagnosis:verbalIQ1 + Diagnosis:nonVerbalIQ1 + Diagnosis:Socialization1 + Diagnosis:MOT_MLU + Diagnosis:types_MOT + Diagnosis:tokens_MOT + (1 + Visit|Child.ID))
+# 
+# 
+# 
+# # Fitting models
+# real_model_fit2 <- brm(
+#   ind_m1, data = real_df, prior = p2, sample_prior = T, backend = "cmdstanr", chains = 2, cores = 2, control = list(adapt_delta = 0.99, max_treedepth = 20), family = lognormal)
+# 
+# pp_check(real_model_fit2, ndraws = 100)
+# 
+# 
+# real_model_fit3 <- brm(
+#   env_m2, data = real_df, prior = p2, sample_prior = T, backend = "cmdstanr", chains = 2, cores = 2, control = list(adapt_delta = 0.99, max_treedepth = 20), family = lognormal, threads = threading(2))
+# 
+# pp_check(real_model_fit3, ndraws = 100)
+# 
+# real_model_fit4 <- brm(
+#   ind_env_m3, data = real_df, prior = p2, sample_prior = T, backend = "cmdstanr", chains = 2, cores = 2, control = list(adapt_delta = 0.99, max_treedepth = 20), family = lognormal)
+# 
+# pp_check(real_model_fit4, ndraws = 100)
+
+```
+
+```{r Model comparison}
+
+# # Add criterions to models
+# 
+# real_model_fit_loo1 <- add_criterion(real_model_fit1, criterion = "loo")
+# 
+# real_model_fit_loo2 <- add_criterion(real_model_fit2, criterion = "loo")
+# 
+# real_model_fit_loo3 <- add_criterion(real_model_fit3, criterion = "loo")
+# 
+# real_model_fit_loo4 <- add_criterion(real_model_fit4, criterion = "loo")
+# 
+# # Compare models on information criterion
+# 
+# loo_compare(real_model_fit_loo1, real_model_fit_loo2, real_model_fit_loo3, real_model_fit_loo4)
+# 
+# loo_model_weights(real_model_fit_loo1, real_model_fit_loo2, real_model_fit_loo3, real_model_fit_loo4)
+
+
+```
+
+
+```{r Cross-validation}
+
+# # Split in k folds
+# kfold1 <- kfold(real_model_fit1, folds = "stratified", group = "Child.ID", K = 5,save_fits = TRUE)
+# 
+# kfold2 <- kfold(real_model_fit2, folds = "stratified", group = "Child.ID", K = 5,save_fits = TRUE)
+# 
+# kfold3 <- kfold(real_model_fit3, folds = "stratified", group = "Child.ID", K = 5,save_fits = TRUE)
+# 
+# kfold4 <- kfold(real_model_fit4, folds = "stratified", group = "Child.ID", K = 5,save_fits = TRUE)
+# 
+# 
+# 
+# # Define loss function
+# rmse <- function(y,yrep) {
+#   yrep_mean <- colMeans(yrep)
+#   sqrt(mean((yrep_mean-y)^2))
+# }
+# 
+# # Predict responses and evaluate the loss
+# kfp1 <- kfold_predict(kfold1)
+# rmse1 <- rmse(kfp1$y, kfp1$yrep)
+# 
+# kfp2 <- kfold_predict(kfold2)
+# rmse2 <- rmse(kfp2$y, kfp2$yrep)
+# 
+# kfp3 <- kfold_predict(kfold3)
+# rmse3 <- rmse(kfp3$y, kfp3$yrep)
+# 
+# kfp4 <- kfold_predict(kfold4)
+# rmse4 <- rmse(kfp4$y, kfp4$yrep)
+# 
+# # Plotting rmse for cross-validation
+# 
+# rmse_plot <- tibble(
+#   model = c("fit1", "fit2", "fit3", "fit4"),
+#   rmse = c(rmse1, rmse2, rmse3, rmse4)
+# )
+# 
+# ggplot(rmse_plot, aes(model, rmse)) +
+#   geom_point(size = 5)
+```
+
+

@@ -1,0 +1,345 @@
+---
+title: "Assignment 2 - Meta-analysis of pitch in schizophrenia"
+author: "Study group 9 - Thomas, Katrine, Caroline, Rikke & Mikkel"
+date: "16/8/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+pacman::p_load(tidyverse, brms, pracma, cmdstanr, ggpubr, readxl, metafor)
+```
+
+# Assignment 2: meta-analysis
+
+## Questions to be answered
+
+1. Simulate data to setup the analysis and gain insight on the structure of the problem. Simulate one dataset of 100 studies (n of participants should follow a normal distribution with mean of 20, sd of 10, but no fewer than 10 participants), with a mean effect size of 0.4, average deviation by study of .4 and measurement error of .8. The data you get should have one row per study, with an effect size mean and standard error. Build a proper bayesian model to analyze the simulated data. Then simulate publication bias (only some of the studies you simulate are likely to be published, which?), the effect of publication bias on your estimates (re-run the model on published studies, assess the difference), and discuss what this implies for your model. remember to use at least one plot to visualize your results. 
+BONUS question: do a power/precision analysis: w this kind of sample sizes (participants) how many studies would you need to acquire good precision (e.g. .1 sd in the pop level estimate)
+
+2. What is the current evidence for distinctive vocal patterns in schizophrenia? 
+Use the data from Parola et al (2020) - https://www.dropbox.com/s/0l9ur0gaabr80a8/Matrix_MetaAnalysis_Diagnosis_updated290719.xlsx?dl=0 - focusing on pitch variability (PITCH_F0SD).  Describe the data available (studies, participants). Using the model from question 1 analyze the data, visualize and report the findings: population level effect size; how well studies reflect it; influential studies, publication bias. 
+BONUS question: assess the effect of task on the estimates (model comparison with baseline model)
+
+
+# Question 1
+
+```{r}
+#Simulating the dataset
+set.seed(122)
+
+n_studies <- 100
+participants<- round(rnorm(n_studies,20,10),0)
+
+#Testing if any study is too small and reiterating. Note this gives a sharp positively skewed distribution
+for(i in 1:n_studies) {
+  while(participants[i] <= 10) {
+    participants[i]<-round(rnorm(1,20,10),0)
+  }
+}
+
+#Checking
+#ifelse(participants <= 10, print("Warning"), print("."))
+
+# Investigating participants
+#c(mean(d$participants), sd(d$participants), min(d$participants), max(d$participants))
+
+#Predicting the outcome of studies. First the means (mu=0.4, sd=0.4)
+effect_size_means<-rnorm(n_studies, .4, .4)
+d<-tibble(ID=seq(1:n_studies),participants, effect_size_means, SE=rep(1,n_studies))
+
+#Lean code that doesn't work
+d<-d %>% 
+  mutate(sd=sd(rnorm(participants,effect_size_means,0.8)))
+
+#Standard deviation and standard error
+for(i in 1:n_studies){
+  d$sd[i]<-sd(rnorm(participants[i],effect_size_means[i],0.8/2))
+}
+
+d<- d %>% 
+  mutate(SE=sd/sqrt(participants))
+
+#Will it get published (90%)
+d<-d %>% 
+  mutate(Published = ifelse(abs(effect_size_means)-2*sd > 0, rbinom(1,1,.9), rbinom(1,1,.1)))
+
+d<-d %>% 
+  mutate(PublishedPositiveEffect = ifelse(effect_size_means > 0 & Published == 1, 1, 0))
+
+#Making the publication bias dataset for comparison
+d_pub_bias <- d %>% 
+  filter(Published == 1)
+
+
+
+### MAKING THE BAYESIAN MODEL ###
+ma_f0 <- bf(effect_size_means | se(sd) ~ 1 + (1|ID))
+
+
+p<-c(
+  prior(normal(0, 0.5), class = Intercept),
+  prior(normal(0, 0.6), class = sd))
+
+get_prior(ma_f0, data = d)
+
+ma_m0_prior <- brm(
+  ma_f0,
+  d,
+  family = gaussian,
+  prior = p,
+  sample_prior = "only",
+  backend = "cmdstanr",
+  chains = 2,
+  cores = 2,
+  control = list(
+    adapt_delta = 0.99,
+    max_treedepth = 20
+  ))
+
+pp_check(ma_m0_prior, ndraws = 100)
+
+ma_m0_all <- brm(
+  ma_f0,
+  d,
+  family = gaussian,
+  prior = p,
+  sample_prior = T,
+  backend = "cmdstanr",
+  chains = 2,
+  cores = 2,
+  control = list(
+    adapt_delta = 0.99,
+    max_treedepth = 20
+  ))
+
+pp_check(ma_m0_all, ndraws = 100)
+
+summary(ma_m0_all)
+
+posterior <- as_draws_df(ma_m0_all)
+
+
+# Running model on published studies and published studies with positive effect sizes
+ma_m0_pub <- update(ma_m0_all, newdata = subset(d, Published == 1))
+
+ma_m0_pubpos <- update(ma_m0_all, newdata = subset(d, PublishedPositiveEffect == 1))
+
+posterior_pub <- as_draws_df(ma_m0_pub, ndraws = 100)
+
+posterior_pub_pos <- as_draws_df(ma_m0_pubpos, ndraws = 100)
+
+
+# Prior-posterior update checks
+plot1 <- ggplot(posterior) + 
+  geom_histogram(aes(prior_Intercept), fill = "red", color = "black", alpha = 0.3, bins = 50) +
+  geom_histogram(aes(b_Intercept), fill = "green", color = "black", alpha = 0.3, bins = 50) +
+  geom_vline(xintercept = 0.4) +
+  xlab("Prior-posterior update check on the intercepts")
+
+
+plot2 <- ggplot(posterior) + 
+  geom_histogram(aes(prior_sd_ID), fill = "red", color = "black", alpha = 0.3, bins = 50) +
+  geom_histogram(aes(sd_ID__Intercept), fill = "green", color = "black", alpha = 0.3, bins = 50) +
+  geom_vline(xintercept = 0.4) +
+  xlab("Prior-posterior update check on the variability by study")
+
+# Including publication biases
+plot3 <- ggplot(posterior_pub) + 
+  geom_histogram(aes(prior_Intercept), fill = "red", color = "black", alpha = 0.3, bins = 50) +
+  geom_histogram(aes(b_Intercept), fill = "green", color = "black", alpha = 0.3, bins = 50) +
+  geom_vline(xintercept = 0.4) +
+  xlab("Prior-posterior update check on the intercepts - Published studies")
+
+plot4 <- ggplot(posterior_pub_pos) + 
+  geom_histogram(aes(prior_Intercept), fill = "red", color = "black", alpha = 0.3, bins = 50) +
+  geom_histogram(aes(b_Intercept), fill = "green", color = "black", alpha = 0.3, bins = 50) +
+  geom_vline(xintercept = 0.4) +
+  xlab("Prior-posterior update check on the intercepts - Published studies positive effectsize")
+
+
+# GGAranging them plots
+ggarrange(plot1, plot2, plot3, plot4, ncol = 2, nrow = 2)
+
+
+```
+
+## Question 2
+
+```{r Loading and prepping data}
+
+# Load data
+df <- read_excel("Matrix_MetaAnalysis_Diagnosis_updated290719.xlsx")
+
+# Subset relevant columns and filter out NA's
+df_sub <- df %>% 
+  select(StudyID, MALE_SZ, FEMALE_SZ, MALE_HC, FEMALE_HC, PITCH_F0SD_HC_M, PITCH_F0SD_HC_SD, PITCH_F0SD_SZ_M, PITCH_F0SD_SZ_SD) %>% 
+  rename(pitch_hc_m = PITCH_F0SD_HC_M, pitch_hc_sd = PITCH_F0SD_HC_SD, pitch_sz_m = PITCH_F0SD_SZ_M, pitch_sz_sd = PITCH_F0SD_SZ_SD) %>% 
+  filter(pitch_sz_m != "NA") %>% 
+  filter(pitch_hc_m != "NA") %>% 
+  filter(MALE_SZ != "NR")
+
+# Summing females and males to n_sz and n_hc
+df_sub <- df_sub %>% 
+  mutate(MALE_HC = as.numeric(MALE_HC), MALE_SZ = as.numeric(MALE_SZ), FEMALE_HC =
+           as.numeric(FEMALE_HC),FEMALE_SZ = as.numeric(FEMALE_SZ)) %>% 
+  mutate(n_sz = MALE_SZ + FEMALE_SZ, n_hc = MALE_HC + FEMALE_HC) %>% 
+  mutate(n = n_sz + n_hc)
+
+# Investigating participants
+dens_n <- density(df_sub$n)
+plot(dens_n)
+
+c(mean(df_sub$n), sd(df_sub$n), min(df_sub$n), max(df_sub$n))
+
+# Standardizing pitch variables
+#df_sub <- df_sub %>% 
+#   mutate(pitch_hc_m_z = (pitch_hc_m-mean(pitch_hc_m))/sd(pitch_hc_m),
+#          pitch_hc_sd_z = (pitch_hc_sd-mean(pitch_hc_sd))/sd(pitch_hc_sd),
+#          pitch_sz_m_z = (pitch_sz_m-mean(pitch_sz_m))/sd(pitch_sz_m),
+#          pitch_sz_sd_z = (pitch_sz_sd-mean(pitch_sz_sd))/sd(pitch_sz_sd)
+# )
+
+
+# Computing PitchMean
+PitchMean <- escalc('SMD',
+                    n1i = n_sz, n2i = n_hc,
+                    m1i = pitch_sz_m, m2i = pitch_hc_m,
+                    sd1i = pitch_sz_sd, sd2i = pitch_hc_sd,
+                    data = df_sub)
+
+
+```
+
+
+```{r Making model}
+
+# Define formula
+m_real <- bf(yi | se(vi) ~ 1 + (1|StudyID))
+
+#get_prior(m_real, data = PitchMean)
+
+# Set priors
+p_8_jazz<-c(
+  prior(normal(0, 0.5), class = Intercept),
+  prior(normal(0, 1), class = sd))
+
+#get_prior(m_real, data = )
+
+# Run model
+m_real_prior <- brm(
+  m_real,
+  PitchMean,
+  family = gaussian,
+  prior = p_8_jazz,
+  sample_prior = "only",
+  backend = "cmdstanr",
+  chains = 2,
+  cores = 2,
+  control = list(
+    adapt_delta = 0.99,
+    max_treedepth = 20
+  ))
+
+pp_check(m_real_prior, ndraws = 100)
+
+
+# Fit model
+m_real_model <- brm(
+  m_real,
+  PitchMean,
+  family = gaussian,
+  prior = p_8_jazz,
+  sample_prior = T,
+  backend = "cmdstanr",
+  chains = 2,
+  cores = 2,
+  control = list(
+    adapt_delta = 0.99,
+    max_treedepth = 20
+  ))
+
+pp_check(m_real_model, ndraws = 100)
+
+summary(m_real_model)
+
+real_posterior <- as_draws_df(m_real_model)
+```
+
+```{r Plotting prior-posterior update checks}
+
+real_plot1 <- ggplot(real_posterior) + 
+  geom_histogram(aes(prior_Intercept), fill = "red", color = "black", alpha = 0.3, bins = 50) +
+  geom_histogram(aes(b_Intercept), fill = "green", color = "black", alpha = 0.3, bins = 50) +
+  xlab("Prior-posterior update check on the intercepts")
+
+
+real_plot2 <- ggplot(real_posterior) + 
+  geom_histogram(aes(prior_sd_StudyID), fill = "red", color = "black", alpha = 0.3, bins = 50) +
+  geom_histogram(aes(sd_StudyID__Intercept), fill = "green", color = "black", alpha = 0.3, bins = 50) +
+  xlab("Prior-posterior update check on the variability by study")
+
+ggarrange(real_plot1, real_plot2, ncol = 2, nrow = 1)
+```
+```{r Plotting yi and vi}
+
+dens <- density(PitchMean$yi)
+plot(dens)
+
+vary <- density(PitchMean$vi)
+plot(vary)
+```
+
+
+
+```{r Filtering out extreme positive effect sizes, running the same analysis and plotting the same variables}
+
+test <- PitchMean %>% 
+  filter(yi < 2)
+
+# Fit model
+m_real_model_test <- brm(
+  m_real,
+  test,
+  family = gaussian,
+  prior = p_8_jazz,
+  sample_prior = T,
+  backend = "cmdstanr",
+  chains = 2,
+  cores = 2,
+  control = list(
+    adapt_delta = 0.99,
+    max_treedepth = 20
+  ))
+
+pp_check(m_real_model, ndraws = 100)
+
+summary(m_real_model)
+
+real_posterior_test <- as_draws_df(m_real_model)
+
+
+# Plotting prior-posterior update checks without extreme effect sizes
+real_plot1_test <- ggplot(real_posterior_test) + 
+  geom_histogram(aes(prior_Intercept), fill = "red", color = "black", alpha = 0.3, bins = 50) +
+  geom_histogram(aes(b_Intercept), fill = "green", color = "black", alpha = 0.3, bins = 50) +
+  xlab("Prior-posterior update check on the intercepts")
+
+
+real_plot2_test <- ggplot(real_posterior_test) + 
+  geom_histogram(aes(prior_sd_StudyID), fill = "red", color = "black", alpha = 0.3, bins = 50) +
+  geom_histogram(aes(sd_StudyID__Intercept), fill = "green", color = "black", alpha = 0.3, bins = 50) +
+  xlab("Prior-posterior update check on the variability by study")
+
+ggarrange(real_plot1_test, real_plot2_test, ncol = 2, nrow = 1)
+
+summary(m_real_model_test)
+
+dens_test <- density(test$yi)
+plot(dens_test)
+
+vary_test <- density(test$vi)
+plot(vary_test)
+```
+

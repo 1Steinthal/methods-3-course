@@ -6,6 +6,9 @@ output: html_document
 ---
 
 ```{r setup, include=FALSE}
+
+#Prepping the R-program with the necessary packets
+
 knitr::opts_chunk$set(echo = TRUE)
 
 #install.packages("tidyverse", "tidymodels", "brms", "cmdstanr", "readr", "caret")
@@ -34,6 +37,7 @@ Use the meta-analysis reported in Parola et al (2020), create a simulated datase
 ```{r}
 #Simulating the dataset
 set.seed(122)
+
 
 n_pairs <- 100
 measure<- 10
@@ -68,6 +72,8 @@ indSD<-1
 MeaSD<-0.5
 Err<-.2
 
+
+#Creating the datasets
 for(i in seq(10)){
   meta_df<-tibble(
     ID=seq(n_pairs),
@@ -81,11 +87,11 @@ for(i in seq(10)){
   )
   if (i == 1) {
     meta_df_true <- meta_df
-    base_df_true <- base_df
+    base_df_true <- base_df #Little...
   }
   else{
     meta_df_true <- rbind(meta_df_true, meta_df)
-    base_df_true <- rbind(base_df_true,base_df)
+    base_df_true <- rbind(base_df_true,base_df) #... by little
   }
   
 }
@@ -99,7 +105,7 @@ d_trial <- tibble(expand_grid(ID=seq(n_pairs), Trial = seq(measure), Group = gro
 meta_df <- merge(meta_df_true,d_trial)
 base_df <- merge(base_df_true,d_trial)
 
-for (i in seq(nrow(meta_df))){
+for (i in seq(nrow(meta_df))){ #Simulate data
   meta_df$measurement[i] <- ifelse(meta_df$Group[i] == 'SZ',
                                    rnorm(1,rnorm(1, meta_df$Eff[i]/2, MeaSD), Err),
                                    rnorm(1,rnorm(1, (-meta_df$Eff[i])/2, MeaSD), Err))
@@ -120,7 +126,7 @@ base_df <- base_df %>%
 
 nam<-c('pitch_var', 'speech_rat', 'pause_dur', 'pause_num', 'prop_spo_tim', 'pitch_mea','r1','r2','r3','r4')
 
-meta_df <- meta_df %>% 
+meta_df <- meta_df %>%  #The names seemed to be off which is why we made this little trick
   rename('pitch_var' = v1,
          'speech_rat' = v2,
          'pause_dur' = v3,
@@ -149,7 +155,7 @@ base_df <- base_df %>%
 library(ggplot2)
 library(reshape2)
 
-plot_meta_df <- melt(meta_df)
+plot_meta_df <- melt(meta_df) #Assessing quality
 
 meta_plot <- plot_meta_df %>% 
   group_by(Group) %>% 
@@ -207,14 +213,14 @@ test_base <- base_df %>% subset(!ID %in% Test_ID)
 
 ```{r PRE-PROCESSING}
 
-
+#Preparing the model
 rec_meta <- train_meta %>% 
   recipe(Group ~ . ) %>% 
   step_scale(all_numeric() ) %>% 
   step_center(all_numeric() ) %>% 
   prep(training = train_meta, retain = TRUE)
 
-rec_base <- train_base %>% 
+rec_base <- train_base %>%  #Also for noice-set
   recipe(Group ~ . ) %>% 
   step_scale(all_numeric() ) %>% 
   step_center(all_numeric() ) %>% 
@@ -224,7 +230,7 @@ train_meta_s <- juice(rec_meta)
 test_meta_s <- bake(rec_meta, new_data = test_meta)
 
 train_base_s <- juice(rec_base)
-test_base_s <- bake(rec_base, new_data = test_base)
+test_base_s <- bake(rec_base, new_data = test_base) #Bakeries running
 
 ```
 
@@ -236,6 +242,8 @@ train_meta_f <- train_meta_s[-c(1:2)]
 train_base_f <- train_base_s[-c(1:2)]
 
 pacman::p_load(rstanarm, randomForest, xgboost, kernlab, dplyr)
+
+#Using all machines on both datasets
 
 meta_stan <- logistic_reg() %>% 
   set_mode("classification") %>% 
@@ -282,6 +290,7 @@ base_svm <- svm_rbf() %>%
 
 ```{r meta_results}
 
+#How did it do?
 meta_results <- test_meta_s %>%
 as_tibble() %>%
   mutate(
@@ -303,7 +312,7 @@ boost_prob = predict(meta_boost, new_data = test_meta_s, type = "prob") %>%
   pull(.pred_SZ)
 )
 
-
+#Nice data
 logi_pred_meta <- metrics(meta_results, truth = Group, estimate = log_class) %>% 
   knitr::kable()
 vectormachine_pred_meta <- metrics(meta_results, truth = Group, estimate = svm_class) %>% 
@@ -315,13 +324,16 @@ boost_pred_meta <- metrics(meta_results, truth = Group, estimate = boost_class) 
 
 pacman::p_load(caret)
 
+#Cutting out the scores we need
 CM_sim_log <- confusionMatrix(meta_results$log_class, meta_results$Group, mode = "everything")
 CM_sim_svm <- confusionMatrix(meta_results$svm_class, meta_results$Group, mode = "everything")
 CM_sim_rf <- confusionMatrix(meta_results$rf_class, meta_results$Group, mode = "everything")
 CM_sim_bo <- confusionMatrix(meta_results$boost_class, meta_results$Group, mode = "everything")
 
+#Here F1-score
 CM_sim <- c(CM_sim_log$byClass[7], CM_sim_svm$byClass[7], CM_sim_rf$byClass[7],CM_sim_bo$byClass[7])
 
+#And plotting
 meta_plot <- tibble(
   engine = c("Log_Reg", "Ran_For", "Boo_Tre", "Vec_Mac"),
   accuracy = c(logi_pred_meta[3], randomforest_pred_meta[3], boost_pred_meta[3], vectormachine_pred_meta [3]),
@@ -333,6 +345,7 @@ meta_plot <- tibble(
 
 ```{r base results}
 
+#All again for noise 
 base_results <- test_base_s %>%
 as_tibble() %>%
   mutate(
@@ -380,7 +393,7 @@ base_plot <- tibble(
 
 
 ```{r}
-
+#Cleaning data
 meta_plot <- meta_plot %>% 
   mutate(accuracy = parse_number(accuracy),
          kappa = parse_number(kappa)
@@ -391,6 +404,7 @@ base_plot <- base_plot %>%
          kappa = parse_number(kappa)
          )
 
+#Binding and plotting
 plot_df <- rbind(meta_plot, base_plot)
 plot_df <- plot_df %>% 
   mutate(ID = rep(c("Meta", "Base"), each = 4))
@@ -441,12 +455,13 @@ train_emp_scz <- d_scz[!d_scz$PatID %in% sample(unique(d_scz$PatID), 18),]
 test_emp <- rbind(test_emp_ct, test_emp_scz)
 train_emp <- rbind(train_emp_ct, train_emp_scz)
 
-# NB. Are we splitting ideally?
+# NOW THE DATA IS SPLIT
 
 ```
 
 ```{r PRE_PROCESSING}
 
+#Same pipeline as before
 rec_emp <- train_emp %>% 
   recipe(Diagnosis ~ . ) %>% 
   step_scale(all_numeric() ) %>% 
@@ -466,6 +481,8 @@ train_emp_f <- train_emp_s[-c(1:6)] %>%
   mutate( Diagnosis = as.factor(Diagnosis))
 
 pacman::p_load(rstanarm, randomForest, xgboost, kernlab, dplyr)
+
+#Briefly testing all 4 machines
 
 emp_stan <- logistic_reg() %>% 
   set_mode("classification") %>% 
@@ -490,6 +507,7 @@ emp_svm <- svm_rbf() %>%
 
 
 ```{r}
+#And predicitng
 emp_results <- test_emp_s %>%
 as_tibble() %>%
   mutate(
@@ -533,7 +551,7 @@ emp_plot <- tibble(
   accuracy = c(logi_pred_emp[3], rf_pred_emp[3], boost_pred_emp[3], svm_pred_emp[3]),
   kappa = c(logi_pred_emp[4], rf_pred_emp[4], boost_pred_emp[4], svm_pred_emp[4])
 ) %>% 
-  mutate(F1 = CM_sim)
+  mutate(F1 = CM_sim) #And all the fuzzle to get the F1-score
 ```
 
 
@@ -580,7 +598,7 @@ test_emp_pca <- rbind(test_emp_ct, test_emp_scz)
 train_emp_pca <- rbind(train_emp_ct, train_emp_scz)
 
 
-###### 
+###### We save these datasets for later
 
 d<-train_emp_pca
 final_train <- d
@@ -615,6 +633,7 @@ train_emp_pca<-train_emp_pca %>%
   select(Diagnosis, Duration_Praat:MeanTurnDur_Praat)
 
 
+#Fucntion for simulating with x (nums) components
 PCA<-function(nums) {
 pca_rec <- recipe(~., data = train_emp_pca) %>%
   update_role(Diagnosis, new_role = "id") %>%
@@ -683,7 +702,7 @@ ggplot(emp_plot, aes(id,F1,colour = kappa))+
 
 
 
-### AND NOW WE HAVE THE FINAL TEST-SET LYING
+### AND NOW WE HAVE THE FINAL TEST-SET LYING. We found that 20 PC was the most appropriate
 
 #Prepping
 final_train<-final_train %>% 
@@ -739,7 +758,7 @@ emp_plot <- tibble(
 return(emp_plot)
 }
 
-emp_plot<-rbind(PCA(5),PCA(7),PCA(10),PCA(15),PCA(20), PCA(30), PCA(40), PCA(50))
+emp_plot<-rbind(PCA(10),PCA(20), PCA(30)) #The 10 and 30 are mainly for comparison. We go with 20
 
 
 emp_plot <- emp_plot %>% 
@@ -752,8 +771,9 @@ ggplot(emp_plot, aes(id,F1,colour = kappa))+
   geom_point(size = 5)+
   xlab("Number of PC")+
   ylab("F1-score")+
-  ggtitle("F1-scores dependent on the number of PC's using the svm-engine - WITH TESTSET")
+  ggtitle("F1-scores dependent on the number of PC's using the svm-engine - WITH TESTSET. We aimed for the 20 components based on our training")
 
+emp_plot
 
 ```
 
