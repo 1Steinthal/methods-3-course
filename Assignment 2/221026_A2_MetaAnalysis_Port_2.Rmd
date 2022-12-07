@@ -1,0 +1,132 @@
+---
+title: "Assignment 2 - Meta-analysis of pitch in schizophrenia"
+author: "Riccardo Fusaroli"
+date: "16/8/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+pacman::p_load(tidyverse, brms, pracma, cmdstanr)
+```
+
+# Assignment 2: meta-analysis
+
+## Questions to be answered
+
+1. Simulate data to setup the analysis and gain insight on the structure of the problem. Simulate one dataset of 100 studies (n of participants should follow a normal distribution with mean of 20, sd of 10, but no fewer than 10 participants), with a mean effect size of 0.4, average deviation by study of .4 and measurement error of .8. The data you get should have one row per study, with an effect size mean and standard error. Build a proper bayesian model to analyze the simulated data. Then simulate publication bias (only some of the studies you simulate are likely to be published, which?), the effect of publication bias on your estimates (re-run the model on published studies, assess the difference), and discuss what this implies for your model. remember to use at least one plot to visualize your results. 
+BONUS question: do a power/precision analysis: w this kind of sample sizes (participants) how many studies would you need to acquire good precision (e.g. .1 sd in the pop level estimate)
+
+2. What is the current evidence for distinctive vocal patterns in schizophrenia? 
+Use the data from Parola et al (2020) - https://www.dropbox.com/s/0l9ur0gaabr80a8/Matrix_MetaAnalysis_Diagnosis_updated290719.xlsx?dl=0 - focusing on pitch variability (PITCH_F0SD).  Describe the data available (studies, participants). Using the model from question 1 analyze the data, visualize and report the findings: population level effect size; how well studies reflect it; influential studies, publication bias. 
+BONUS question: assess the effect of task on the estimates (model comparison with baseline model)
+
+
+# Question 1
+
+```{r}
+#Simulating the dataset
+set.seed(122)
+
+n_studies <- 100
+participants<- round(rnorm(n_studies,20,10),0)
+
+#Testing if any study is too small and reiterating. Note this gives a sharp positively skewed distribution
+for(i in 1:n_studies) {
+  while(participants[i] <= 10) {
+    participants[i]<-round(rnorm(1,20,10),0)
+  }
+}
+
+#Checking
+#ifelse(participants <= 10, print("Warning"), print("."))
+
+
+
+
+#Predicting the outcome of studies. First the means (mu=0.4, sd=0.4)
+effect_size_means<-rnorm(n_studies, .4, .4)
+d<-tibble(ID=seq(1:n_studies),participants, effect_size_means, SE=rep(1,n_studies))
+
+#Lean code that doesn't work
+d<-d %>% 
+  mutate(sd=sd(rnorm(participants,effect_size_means,0.8)))
+
+#Standard deviation and standard error
+for(i in 1:n_studies){
+  d$sd[i]<-sd(rnorm(participants[i],effect_size_means[i],0.8/2))
+}
+
+d<-d %>% 
+  mutate(SE=sd/sqrt(participants))
+
+#Will it get published (90%)
+d<-d %>% 
+  mutate(Published = ifelse(abs(effect_size_means)-2*sd > 0, rbinom(1,1,.9), rbinom(1,1,.1)))
+
+d<-d %>% 
+  mutate(PublishedPositiveEffect = ifelse(effect_size_means > 0 & Published == 1, 1, 0))
+
+#Making the publication bias dataset for comparison
+d_pub_bias <- d %>% 
+  filter(Published == 1)
+
+
+
+### MAKING THE BAYESIAN MODEL ###
+ma_f0 <- bf(effect_size_means | se(sd) ~ 1 + (1|ID))
+get_prior(ma_f0, d, gaussian)
+
+p<-c(prior(normal(0,0.3),class=Intercept),
+     prior(normal(0,0.2),class=sd))
+
+ma_m0_prior <- brm(
+  ma_f0,
+  d,
+  family = gaussian,
+  prior = p,
+  sample_prior = "only",
+  backend = "cmdstanr",
+  chains = 2,
+  cores = 2,
+  control = list(
+    adapt_delta = 0.9,
+    max_treedepth = 20)
+)
+
+pp_check(ma_m0_prior, ndraws=100)
+
+ma_m0_all <- brm(
+  ma_f0,
+  d,
+  family = gaussian,
+  prior = ma_p0,
+  sample_prior = T,
+  backend = "cmdstanr",
+  threads = threading(2),
+  chains = 2,
+  cores = 2,
+  control = list(
+    adapt_delta = 0.9,
+    max_treedepth = 20
+  ),
+  stan_model_args = list(stanc_options = list("01"))
+)
+
+ma_m0_pub <- update(ma_m0_all, newdata = subset(d, Published == 1))
+ma_m0_pubpos <- update(ma_m0_all, newdata = subset(d, PublishedPos == 1))
+
+#Then we do the same for the d_pub_bias and compare to see the effect. REMEMBER A PLOT
+#INSERT CODE
+
+
+```
+
+## Question 2
+
+```{r}
+
+
+```
+

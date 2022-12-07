@@ -7,6 +7,8 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
+
+pacman::p_load(tidyverse, brms, pracma)
 ```
 
 # Assignment 2: meta-analysis
@@ -24,6 +26,42 @@ BONUS question: assess the effect of task on the estimates (model comparison wit
 # Question 1
 
 ```{r}
+#Simulating the dataset
+set.seed(122)
+
+n_studies <- 100
+participants<- round(rnorm(n_studies,20,10),0)
+
+#Testing if any study is too small and reiterating. Note this gives a sharp positively skewed distribution
+for(i in 1:n_studies) {
+  while(participants[i] <= 10) {
+    participants[i]<-round(rnorm(1,20,10),0)
+  }
+}
+
+#Checking
+#ifelse(participants <= 10, print("Warning"), print("."))
+
+
+
+
+#Predicting the outcome of studies
+effect_size_means<-rnorm(n_studies, .4, .4)
+d<-tibble(ID=seq(1:n_studies),participants, effect_size_means)
+
+d<-d %>% 
+  mutate(SE=std_err(rnorm(participants,effect_size_means,0.8)))
+
+for(i in 1:n_studies){
+  d$SE[i]<-std_err(rnorm(participants[i],effect_size_means[i],0.8))
+}
+
+#standard_error<-sd(effect_sizes)/sqrt(n_studies)
+std_err(d$effect_size_means)
+
+
+
+
 
 ```
 

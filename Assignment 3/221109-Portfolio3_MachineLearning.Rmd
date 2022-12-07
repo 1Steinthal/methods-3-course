@@ -1,0 +1,506 @@
+---
+title: "221109-Portfolio3_MachineLearning"
+author: "Thomas Steinthal"
+date: "2022-11-09"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+pacman::p_load(tidyverse, tidymodels, brms, cmdstanr, readr)
+
+
+```
+
+# The assignment
+
+The Machine Learning assignment has 3 main parts: First we create a skeptical and an informed simulation, based on the meta-analysis. Second we build and test our machine learning pipeline on the simulated data. Second we apply the pipeline to the empirical data.
+
+The report for the exam, thus, consists of the answer to all the following prompts:
+- Describe your machine learning pipeline. Produce a diagram of it to guide the reader (e.g. see Rybner et al 2022 Vocal markers of autism: Assessing the generalizability of ML models), and describe the different parts: data budgeting, data preprocessing, model choice and training, assessment of performance.
+- Briefly justify and describe your use of simulated data, and results from the pipeline on them.
+- Describe results from applying the ML pipeline to the empirical data and what can we learn from them.
+
+Remember: plots are very very important to communicate your process and results.
+
+## Part I - Simulating data
+
+Use the meta-analysis reported in Parola et al (2020), create a simulated dataset with 100 matched pairs of schizophrenia and controls, each participant producing 10 repeated measures (10 trials with their speech recorded). for each of these "recordings" (data points) produce 10 acoustic measures: 6 from the meta-analysis, 4 with just random noise. Do the same for a baseline dataset including only 10 noise variables. Tip: see the slides for the code. 
+
+```{r}
+#Simulating the dataset
+set.seed(122)
+
+n_pairs <- 100
+measure<- 10
+groups<-c('SZ','C')
+
+#6 measures from 
+pitch_variability<-c(-.55,-1.06,-.01)
+speech_rate<-c(-.75,-1.51,.04)
+pause_duration<-c(1.89,.72,3.21) #Big effect size!
+pause_number<-c(.05,-1.23,1.13) #Very high p-value
+prop_of_spoken_time<-c(-1.26,-2.26,-0.25)
+pitch_mean<-c(.25,-.72,1.3) #Very high p-value
+
+#Random-noise
+r1<-c(0,1)
+
+
+sdf<-tibble(
+  ID=rep(1:measure, each = 20),
+  Trial=rep(1:10, each = 2, times = 10),
+  Diagnosis=rep(groups, times=n_pairs))
+
+
+
+```
+
+
+```{r}
+InformedMean<-c(-.55,-.75,1.89,.05,-1.26,.25,0,0,0,0)
+base_mean<-rep(0,10)
+indSD<-1
+MeaSD<-0.5
+Err<-.2
+
+for(i in seq(10)){
+  meta_df<-tibble(
+    ID=seq(n_pairs),
+    Eff=rnorm(n_pairs,InformedMean[i],indSD),
+    var=paste0('v',i)
+  )
+  base_df<-tibble(
+    ID=seq(n_pairs),
+    Eff=rnorm(n_pairs,base_mean[i],indSD),
+    var=paste0('v',i)
+  )
+  if (i == 1) {
+    meta_df_true <- meta_df
+    base_df_true <- base_df
+  }
+  else{
+    meta_df_true <- rbind(meta_df_true, meta_df)
+    base_df_true <- rbind(base_df_true,base_df)
+  }
+  
+}
+
+
+```
+
+```{r}
+d_trial <- tibble(expand_grid(ID=seq(n_pairs), Trial = seq(measure), Group = groups))
+
+meta_df <- merge(meta_df_true,d_trial)
+base_df <- merge(base_df_true,d_trial)
+
+for (i in seq(nrow(meta_df))){
+  meta_df$measurement[i] <- ifelse(meta_df$Group[i] == 'SZ',
+                                   rnorm(1,rnorm(1, meta_df$Eff[i]/2, MeaSD), Err),
+                                   rnorm(1,rnorm(1, (-meta_df$Eff[i])/2, MeaSD), Err))
+  base_df$measurement[i] <- ifelse(base_df$Group[i] == 'SZ',
+                                   rnorm(1,rnorm(1, base_df$Eff[i]/2, MeaSD), Err),
+                                   rnorm(1,rnorm(1, (-base_df$Eff[i])/2, MeaSD), Err))
+}
+
+
+meta_df <-  meta_df %>% 
+  mutate(Eff = NULL) %>% 
+  pivot_wider(names_from = var,
+              values_from = measurement)
+base_df <- base_df %>% 
+  mutate(Eff = NULL) %>% 
+  pivot_wider(names_from = var,
+              values_from = measurement)
+
+nam<-c('pitch_var', 'speech_rat', 'pause_dur', 'pause_num', 'prop_spo_tim', 'pitch_mea','r1','r2','r3','r4')
+
+meta_df <- meta_df %>% 
+  rename('pitch_var' = v1,
+         'speech_rat' = v2,
+         'pause_dur' = v3,
+         'pause_num' = v4,
+         'prop_spo_tim' = v5,
+         'pitch_mea' = v6,
+         'r1' = v7,
+         'r2' = v8,
+         'r3' = v9,
+         'r4' = v10)
+
+base_df <- base_df %>% 
+  rename('pitch_var' = v1,
+         'speech_rat' = v2,
+         'pause_dur' = v3,
+         'pause_num' = v4,
+         'prop_spo_tim' = v5,
+         'pitch_mea' = v6,
+         'r1' = v7,
+         'r2' = v8,
+         'r3' = v9,
+         'r4' = v10)
+
+
+#PLOTS?
+#meta_df %>% 
+#  group_by(Group) %>% 
+#  plot(density(Eff))
+
+```
+
+
+## Part II - ML pipeline on simulated data
+
+On the two simulated datasets (separately) build a machine learning pipeline: i) create a data budget (e.g. balanced training and test sets); ii) pre-process the data (e.g. scaling the features); iii) fit and assess a classification algorithm on the training data (e.g. Bayesian multilevel logistic regression); iv) assess performance on the test set; v) discuss whether performance is as expected and feature importance is as expected.
+
+Bonus question: replace the bayesian multilevel regression with a different algorithm, e.g. SVM or random forest (but really, anything you'd like to try).
+
+```{r DATA BUDGETTING - (80-20)}
+meta_df <- meta_df %>% 
+  mutate(ID = as.factor(ID),
+         Trial = as.factor(Trial))
+
+base_df <- base_df %>% 
+  mutate(ID = as.factor(ID),
+         Trial = as.factor(Trial))
+
+
+Test_ID <- sample(seq(n_pairs, 20))
+
+train_meta <- meta_df %>% subset((ID %in% Test_ID))
+test_meta <- meta_df %>% subset(!ID %in% Test_ID)
+
+
+Test_ID <- sample(seq(n_pairs, 20))
+
+train_base <- base_df %>% subset((ID %in% Test_ID))
+test_base <- base_df %>% subset(!ID %in% Test_ID)
+
+
+#trainmeta <- train_meta %>% select(Group:prop_spo_tim)
+#testmeta <- test_meta %>% select(Group:prop_spo_tim)
+```
+
+```{r PRE-PROCESSING}
+
+
+rec_meta <- train_meta %>% 
+  recipe(Group ~ . ) %>% 
+  step_scale(all_numeric() ) %>% 
+  step_center(all_numeric() ) %>% 
+  prep(training = train_meta, retain = TRUE)
+
+rec_base <- train_base %>% 
+  recipe(Group ~ . ) %>% 
+  step_scale(all_numeric() ) %>% 
+  step_center(all_numeric() ) %>% 
+  prep(training = train_base, retain = TRUE)
+
+train_meta_s <- juice(rec_meta)
+test_meta_s <- bake(rec_meta, new_data = test_meta)
+
+train_base_s <- juice(rec_base)
+test_base_s <- bake(rec_base, new_data = test_base)
+
+```
+
+
+```{r  fit and assess a classification algorithm on the training data}
+
+train_meta_f <- train_meta_s[-c(1:2)]
+
+train_base_f <- train_base_s[-c(1:2)]
+
+pacman::p_load(rstanarm, randomForest, xgboost, kernlab, dplyr)
+
+meta_stan <- logistic_reg() %>% 
+  set_mode("classification") %>% 
+  set_engine("glm") %>% 
+  fit(Group ~ . , data = train_meta_f)
+
+meta_rf <- rand_forest() %>%   
+  set_mode("classification") %>% 
+  set_engine("randomForest") %>% 
+  fit(Group ~ . , data = train_meta_f)
+
+meta_boost <- boost_tree() %>% 
+  set_mode("classification") %>% 
+  set_engine("xgboost") %>% 
+  fit(Group ~ . , data = train_meta_f)
+
+meta_svm <- svm_rbf() %>% 
+  set_mode("classification") %>% 
+  set_engine("kernlab") %>% 
+  fit(Group ~ . , data = train_meta_f)
+
+base_stan <- logistic_reg() %>% 
+  set_mode("classification") %>% 
+  set_engine("glm") %>% 
+  fit(Group ~ . , data = train_base_f)
+
+base_rf <- rand_forest() %>% 
+  set_mode("classification") %>% 
+  set_engine("randomForest") %>% 
+  fit(Group ~ . , data = train_base_f)
+
+base_boost <- boost_tree() %>% 
+  set_mode("classification") %>% 
+  set_engine("xgboost") %>% 
+  fit(Group ~ . , data = train_base_f)
+
+base_svm <- svm_rbf() %>% 
+  set_mode("classification") %>% 
+  set_engine("kernlab") %>% 
+  fit(Group ~ . , data = train_base_f)
+
+
+```
+
+```{r meta_results}
+
+meta_results <- test_meta_s %>%
+as_tibble() %>%
+  mutate(
+    log_class = predict(meta_stan, new_data = test_meta_s) %>% 
+      pull(.pred_class),
+    log_prob =  predict(meta_stan, new_data = test_meta_s, type = "prob") %>%
+      pull(.pred_SZ),
+svm_class = predict(meta_svm, new_data = test_meta_s) %>%
+  pull(.pred_class),
+svm_prob = predict(meta_svm, new_data = test_meta_s, type = "prob") %>% 
+  pull(.pred_SZ),
+rf_class = predict (meta_rf, new_data = test_meta_s) %>% 
+  pull(.pred_class),
+rf_prob = predict(meta_rf, new_data = test_meta_s, type = "prob") %>% 
+pull(.pred_SZ),
+boost_class = predict(meta_boost, new_data = test_meta_s) %>%
+  pull(.pred_class),
+boost_prob = predict(meta_boost, new_data = test_meta_s, type = "prob") %>%
+  pull(.pred_SZ)
+)
+
+
+logi_pred_meta <- metrics(meta_results, truth = Group, estimate = log_class) %>% 
+  knitr::kable()
+vectormachine_pred_meta <- metrics(meta_results, truth = Group, estimate = svm_class) %>% 
+  knitr::kable()
+randomforest_pred_meta <- metrics(meta_results, truth = Group, estimate = rf_class) %>% 
+  knitr::kable()
+boost_pred_meta <- metrics(meta_results, truth = Group, estimate = boost_class) %>% 
+  knitr::kable()
+
+meta_plot <- tibble(
+  engine = c("Log_Reg", "Ran_For", "Boo_Tre", "Vec_Mac"),
+  accuracy = c(logi_pred_meta[3], randomforest_pred_meta[3], boost_pred_meta[3], vectormachine_pred_meta [3]),
+  kappa = c(logi_pred_meta[4], randomforest_pred_meta[4], boost_pred_meta[4], vectormachine_pred_meta [4])
+)
+
+```
+
+```{r base results}
+
+base_results <- test_base_s %>%
+as_tibble() %>%
+  mutate(
+    log_class = predict(base_stan, new_data = test_base_s) %>% 
+      pull(.pred_class),
+    log_prob =  predict(base_stan, new_data = test_base_s, type = "prob") %>%
+      pull(.pred_SZ),
+svm_class = predict(base_svm, new_data = test_base_s) %>%
+  pull(.pred_class),
+svm_prob = predict(base_svm, new_data = test_base_s, type = "prob") %>% 
+  pull(.pred_SZ),
+rf_class = predict (base_rf, new_data = test_base_s) %>% 
+  pull(.pred_class),
+rf_prob = predict(base_rf, new_data = test_base_s, type = "prob") %>% 
+pull(.pred_SZ),
+boost_class = predict(base_boost, new_data = test_base_s) %>%
+  pull(.pred_class),
+boost_prob = predict(base_boost, new_data = test_base_s, type = "prob") %>%
+  pull(.pred_SZ)
+)
+
+logi_pred_base <- metrics(base_results, truth = Group, estimate = log_class) %>% 
+  knitr::kable()
+vectormachine_pred_base <- metrics(base_results, truth = Group, estimate = svm_class) %>% 
+  knitr::kable()
+randomforest_pred_base <- metrics(base_results, truth = Group, estimate = rf_class) %>% 
+  knitr::kable()
+boost_pred_base<- metrics(base_results, truth = Group, estimate = boost_class) %>% 
+  knitr::kable()
+
+base_plot <- tibble(
+  engine = c("Log_Reg", "Ran_For", "Boo_Tre", "Vec_Mac"),
+  accuracy = c(logi_pred_base[3], randomforest_pred_base[3], boost_pred_base[3], vectormachine_pred_base[3]),
+  kappa = c(logi_pred_base[4], randomforest_pred_base[4], boost_pred_base[4], vectormachine_pred_base[4])
+)
+```
+
+
+```{r}
+
+meta_plot <- meta_plot %>% 
+  mutate(accuracy = parse_number(accuracy),
+         kappa = parse_number(kappa)
+         )
+
+base_plot <- base_plot %>% 
+  mutate(accuracy = parse_number(accuracy),
+         kappa = parse_number(kappa)
+         )
+
+plot_df <- rbind(meta_plot, base_plot)
+plot_df <- plot_df %>% 
+  mutate(ID = rep(c("Meta", "Base"), each = 4))
+
+ggplot(plot_df, aes(engine, accuracy, color = ID))+
+  geom_point(size = 5)
+
+```
+
+
+
+
+
+
+```{r TRAIN MODEL - BAYESIAN LOGISTIC REGRESSION}
+
+### MAKING THE BAYESIAN MODEL ###
+ma_f0 <- bf(Group ~ 1 + pitch_var) #Base model
+ma_f1 <- bf(Group ~ 1 + pitch_var + (1|ID)) #Varying intercept
+ma_f2 <- bf(Group ~ 1 + pitch_var + (1 + pitch_var | ID)) #Varying slope
+
+get_prior(ma_f0, train_meta_s, family = bernoulli)
+
+ma_f0_prior <- c(
+  prior(normal(0,1), class = Intercept),
+  prior(normal(0, .3), class = b)
+)
+
+ma_m0 <- brm(
+  ma_f0,
+  train_meta_s,
+  family = bernoulli,
+  prior = ma_f0_prior,
+  sample_prior = T,
+  backend = "cmdstanr",
+  chains = 2,
+  cores = 2,
+  threads = threading(2),
+  control = list(adapt_delta = 0.9,
+                 max_treedepth = 20)
+)
+
+ma_m1 <- brm(
+  ma_f1,
+  train_meta_s,
+  family = bernoulli,
+  prior = ma_f0_prior,
+  sample_prior = T,
+  backend = "cmdstanr",
+  chains = 2,
+  cores = 2,
+  threads = threading(2),
+  control = list(adapt_delta = 0.9,
+                 max_treedepth = 20)
+)
+
+ma_m2 <- brm(
+  ma_f2,
+  train_meta_s,
+  family = bernoulli,
+  prior = ma_f0_prior,
+  sample_prior = T,
+  backend = "cmdstanr",
+  chains = 2,
+  cores = 2,
+  threads = threading(2),
+  control = list(adapt_delta = 0.9,
+                 max_treedepth = 20)
+)
+
+pp_check(ma_m0, ndraws = 100)
+pp_check(ma_m1, ndraws = 100)
+pp_check(ma_m2, ndraws = 100)
+
+summary(ma_m0)
+
+posterior <- as_draws_df(ma_m0)
+
+
+# Prior-posterior update checks
+plot1 <- ggplot(posterior) + 
+  geom_histogram(aes(prior_Intercept), fill = "red", color = "black", alpha = 0.3, bins = 50) +
+  geom_histogram(aes(b_Intercept), fill = "green", color = "black", alpha = 0.3, bins = 50) +
+  geom_vline(xintercept = 0.4) +
+  xlab("Prior-posterior update check on the intercepts")
+       
+       
+
+```
+
+```{r}
+
+```
+
+
+## Part III - Applying the ML pipeline to empirical data
+
+Download the empirical dataset from brightspace and apply your ML pipeline to the new data, adjusting where needed. Warning: in the simulated dataset we only had 10 features, now you have many more! Such is the life of the ML practitioner. Consider the impact a higher number of features will have on your ML inference, and decide whether you need to cut down the number of features before running the pipeline (or alternatively expand the pipeline to add feature selection).
+
+Data: https://www.dropbox.com/s/7ky1axvea33lgye/Ass3_empiricalData1.csv?dl=0
+
+```{r}
+d<-read_csv('Ass3_empiricalData1.csv')
+
+```
+
+```{r DATA BUDGETTING}
+
+train <- d %>% dplyr::sample_frac(.75, by = PatID)
+test  <- dplyr::anti_join(d, train, by = 'PatID')
+
+
+train <- tibble()
+test <- tibble()
+
+Test_ID <- sample(seq(n_pairs, 20))
+
+for (i in d$PatID) {
+  s <- rbinom(1,1,.8)
+  if (s == 1) {
+    train %>% add_row(d$PatID[i])
+  }
+  else {
+    test %>% add_row(d$PatID[i])
+  }
+}
+
+d <- d %>% 
+  filter(PatID != 101:102, 
+         PatID != 328:346)
+
+d <- d %>% 
+  mutate(PatID = PatID-102)
+
+
+Test_ID <- sample(seq(n_pairs, 20))
+
+train_meta <- meta_df %>% subset((ID %in% Test_ID))
+test_meta <- meta_df %>% subset(!ID %in% Test_ID)
+
+
+Test_ID <- sample(seq(n_pairs, 20))
+
+train_base <- base_df %>% subset((ID %in% Test_ID))
+test_base <- base_df %>% subset(!ID %in% Test_ID)
+
+
+#trainmeta <- train_meta %>% select(Group:prop_spo_tim)
+#testmeta <- test_meta %>% select(Group:prop_spo_tim)
+
+
+```
+
+

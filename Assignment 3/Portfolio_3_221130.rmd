@@ -1,0 +1,681 @@
+---
+title: "221109-Portfolio3_MachineLearning"
+author: "Thomas Steinthal"
+date: "2022-11-09"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+pacman::p_load(tidyverse, tidymodels, brms, cmdstanr, readr, caret)
+
+
+```
+
+# The assignment
+
+The Machine Learning assignment has 3 main parts: First we create a skeptical and an informed simulation, based on the meta-analysis. Second we build and test our machine learning pipeline on the simulated data. Second we apply the pipeline to the empirical data.
+
+The report for the exam, thus, consists of the answer to all the following prompts:
+- Describe your machine learning pipeline. Produce a diagram of it to guide the reader (e.g. see Rybner et al 2022 Vocal markers of autism: Assessing the generalizability of ML models), and describe the different parts: data budgeting, data preprocessing, model choice and training, assessment of performance.
+- Briefly justify and describe your use of simulated data, and results from the pipeline on them.
+- Describe results from applying the ML pipeline to the empirical data and what can we learn from them.
+
+Remember: plots are very very important to communicate your process and results.
+
+## Part I - Simulating data
+
+Use the meta-analysis reported in Parola et al (2020), create a simulated dataset with 100 matched pairs of schizophrenia and controls, each participant producing 10 repeated measures (10 trials with their speech recorded). for each of these "recordings" (data points) produce 10 acoustic measures: 6 from the meta-analysis, 4 with just random noise. Do the same for a baseline dataset including only 10 noise variables. Tip: see the slides for the code. 
+
+```{r}
+#Simulating the dataset
+set.seed(122)
+
+n_pairs <- 100
+measure<- 10
+groups<-c('SZ','C')
+
+#6 measures from 
+pitch_variability<-c(-.55,-1.06,-.01)
+speech_rate<-c(-.75,-1.51,.04)
+pause_duration<-c(1.89,.72,3.21) #Big effect size!
+pause_number<-c(.05,-1.23,1.13) #Very high p-value
+prop_of_spoken_time<-c(-1.26,-2.26,-0.25)
+pitch_mean<-c(.25,-.72,1.3) #Very high p-value
+
+#Random-noise
+r1<-c(0,1)
+
+
+sdf<-tibble(
+  ID=rep(1:measure, each = 20),
+  Trial=rep(1:10, each = 2, times = 10),
+  Diagnosis=rep(groups, times=n_pairs))
+
+
+
+```
+
+
+```{r}
+InformedMean<-c(-.55,-.75,1.89,.05,-1.26,.25,0,0,0,0)
+base_mean<-rep(0,10)
+indSD<-1
+MeaSD<-0.5
+Err<-.2
+
+for(i in seq(10)){
+  meta_df<-tibble(
+    ID=seq(n_pairs),
+    Eff=rnorm(n_pairs,InformedMean[i],indSD),
+    var=paste0('v',i)
+  )
+  base_df<-tibble(
+    ID=seq(n_pairs),
+    Eff=rnorm(n_pairs,base_mean[i],indSD),
+    var=paste0('v',i)
+  )
+  if (i == 1) {
+    meta_df_true <- meta_df
+    base_df_true <- base_df
+  }
+  else{
+    meta_df_true <- rbind(meta_df_true, meta_df)
+    base_df_true <- rbind(base_df_true,base_df)
+  }
+  
+}
+
+
+```
+
+```{r}
+d_trial <- tibble(expand_grid(ID=seq(n_pairs), Trial = seq(measure), Group = groups))
+
+meta_df <- merge(meta_df_true,d_trial)
+base_df <- merge(base_df_true,d_trial)
+
+for (i in seq(nrow(meta_df))){
+  meta_df$measurement[i] <- ifelse(meta_df$Group[i] == 'SZ',
+                                   rnorm(1,rnorm(1, meta_df$Eff[i]/2, MeaSD), Err),
+                                   rnorm(1,rnorm(1, (-meta_df$Eff[i])/2, MeaSD), Err))
+  base_df$measurement[i] <- ifelse(base_df$Group[i] == 'SZ',
+                                   rnorm(1,rnorm(1, base_df$Eff[i]/2, MeaSD), Err),
+                                   rnorm(1,rnorm(1, (-base_df$Eff[i])/2, MeaSD), Err))
+}
+
+
+meta_df <-  meta_df %>% 
+  mutate(Eff = NULL) %>% 
+  pivot_wider(names_from = var,
+              values_from = measurement)
+base_df <- base_df %>% 
+  mutate(Eff = NULL) %>% 
+  pivot_wider(names_from = var,
+              values_from = measurement)
+
+nam<-c('pitch_var', 'speech_rat', 'pause_dur', 'pause_num', 'prop_spo_tim', 'pitch_mea','r1','r2','r3','r4')
+
+meta_df <- meta_df %>% 
+  rename('pitch_var' = v1,
+         'speech_rat' = v2,
+         'pause_dur' = v3,
+         'pause_num' = v4,
+         'prop_spo_tim' = v5,
+         'pitch_mea' = v6,
+         'r1' = v7,
+         'r2' = v8,
+         'r3' = v9,
+         'r4' = v10)
+
+base_df <- base_df %>% 
+  rename('pitch_var' = v1,
+         'speech_rat' = v2,
+         'pause_dur' = v3,
+         'pause_num' = v4,
+         'prop_spo_tim' = v5,
+         'pitch_mea' = v6,
+         'r1' = v7,
+         'r2' = v8,
+         'r3' = v9,
+         'r4' = v10)
+
+
+#PLOTTTING
+library(ggplot2)
+library(reshape2)
+
+plot_meta_df <- melt(meta_df)
+
+meta_plot <- plot_meta_df %>% 
+  group_by(Group) %>% 
+  ggplot(aes(x = value, fill = Group)) +
+  geom_density(alpha = 0.2) + 
+  facet_wrap(~variable) + 
+  theme_bw() + 
+  ggtitle('Informed')
+
+plot_base_df <- melt(base_df)
+
+base_plot <- plot_base_df %>% 
+  group_by(Group) %>% 
+  ggplot(aes(x = value, fill = Group)) +
+  geom_density(alpha = 0.2) + 
+  facet_wrap(~variable) + 
+  theme_bw() + 
+  ggtitle('Skeptic')
+
+library(gridExtra)
+grid.arrange(meta_plot, base_plot, ncol = 2)
+
+```
+
+
+## Part II - ML pipeline on simulated data
+
+On the two simulated datasets (separately) build a machine learning pipeline: i) create a data budget (e.g. balanced training and test sets); ii) pre-process the data (e.g. scaling the features); iii) fit and assess a classification algorithm on the training data (e.g. Bayesian multilevel logistic regression); iv) assess performance on the test set; v) discuss whether performance is as expected and feature importance is as expected.
+
+Bonus question: replace the bayesian multilevel regression with a different algorithm, e.g. SVM or random forest (but really, anything you'd like to try).
+
+```{r DATA BUDGETTING - (80-20)}
+meta_df <- meta_df %>% 
+  mutate(ID = as.factor(ID),
+         Trial = as.factor(Trial))
+
+base_df <- base_df %>% 
+  mutate(ID = as.factor(ID),
+         Trial = as.factor(Trial))
+
+
+Test_ID <- sample(seq(n_pairs, 20))
+
+train_meta <- meta_df %>% subset((ID %in% Test_ID))
+test_meta <- meta_df %>% subset(!ID %in% Test_ID)
+
+
+Test_ID <- sample(seq(n_pairs, 20))
+
+train_base <- base_df %>% subset((ID %in% Test_ID))
+test_base <- base_df %>% subset(!ID %in% Test_ID)
+
+
+```
+
+```{r PRE-PROCESSING}
+
+
+rec_meta <- train_meta %>% 
+  recipe(Group ~ . ) %>% 
+  step_scale(all_numeric() ) %>% 
+  step_center(all_numeric() ) %>% 
+  prep(training = train_meta, retain = TRUE)
+
+rec_base <- train_base %>% 
+  recipe(Group ~ . ) %>% 
+  step_scale(all_numeric() ) %>% 
+  step_center(all_numeric() ) %>% 
+  prep(training = train_base, retain = TRUE)
+
+train_meta_s <- juice(rec_meta)
+test_meta_s <- bake(rec_meta, new_data = test_meta)
+
+train_base_s <- juice(rec_base)
+test_base_s <- bake(rec_base, new_data = test_base)
+
+```
+
+
+```{r  fit and assess a classification algorithm on the training data}
+
+train_meta_f <- train_meta_s[-c(1:2)]
+
+train_base_f <- train_base_s[-c(1:2)]
+
+pacman::p_load(rstanarm, randomForest, xgboost, kernlab, dplyr)
+
+meta_stan <- logistic_reg() %>% 
+  set_mode("classification") %>% 
+  set_engine("glm") %>% 
+  fit(Group ~ . , data = train_meta_f)
+
+meta_rf <- rand_forest() %>%   
+  set_mode("classification") %>% 
+  set_engine("randomForest") %>% 
+  fit(Group ~ . , data = train_meta_f)
+
+meta_boost <- boost_tree() %>% 
+  set_mode("classification") %>% 
+  set_engine("xgboost") %>% 
+  fit(Group ~ . , data = train_meta_f)
+
+meta_svm <- svm_rbf() %>% 
+  set_mode("classification") %>% 
+  set_engine("kernlab") %>% 
+  fit(Group ~ . , data = train_meta_f)
+
+base_stan <- logistic_reg() %>% 
+  set_mode("classification") %>% 
+  set_engine("glm") %>% 
+  fit(Group ~ . , data = train_base_f)
+
+base_rf <- rand_forest() %>% 
+  set_mode("classification") %>% 
+  set_engine("randomForest") %>% 
+  fit(Group ~ . , data = train_base_f)
+
+base_boost <- boost_tree() %>% 
+  set_mode("classification") %>% 
+  set_engine("xgboost") %>% 
+  fit(Group ~ . , data = train_base_f)
+
+base_svm <- svm_rbf() %>% 
+  set_mode("classification") %>% 
+  set_engine("kernlab") %>% 
+  fit(Group ~ . , data = train_base_f)
+
+
+```
+
+```{r meta_results}
+
+meta_results <- test_meta_s %>%
+as_tibble() %>%
+  mutate(
+    log_class = predict(meta_stan, new_data = test_meta_s) %>% 
+      pull(.pred_class),
+    log_prob =  predict(meta_stan, new_data = test_meta_s, type = "prob") %>%
+      pull(.pred_SZ),
+svm_class = predict(meta_svm, new_data = test_meta_s) %>%
+  pull(.pred_class),
+svm_prob = predict(meta_svm, new_data = test_meta_s, type = "prob") %>% 
+  pull(.pred_SZ),
+rf_class = predict (meta_rf, new_data = test_meta_s) %>% 
+  pull(.pred_class),
+rf_prob = predict(meta_rf, new_data = test_meta_s, type = "prob") %>% 
+pull(.pred_SZ),
+boost_class = predict(meta_boost, new_data = test_meta_s) %>%
+  pull(.pred_class),
+boost_prob = predict(meta_boost, new_data = test_meta_s, type = "prob") %>%
+  pull(.pred_SZ)
+)
+
+
+logi_pred_meta <- metrics(meta_results, truth = Group, estimate = log_class) %>% 
+  knitr::kable()
+vectormachine_pred_meta <- metrics(meta_results, truth = Group, estimate = svm_class) %>% 
+  knitr::kable()
+randomforest_pred_meta <- metrics(meta_results, truth = Group, estimate = rf_class) %>% 
+  knitr::kable()
+boost_pred_meta <- metrics(meta_results, truth = Group, estimate = boost_class) %>% 
+  knitr::kable()
+
+pacman::p_load(caret)
+
+CM_sim_log <- confusionMatrix(meta_results$log_class, meta_results$Group, mode = "everything")
+CM_sim_svm <- confusionMatrix(meta_results$svm_class, meta_results$Group, mode = "everything")
+CM_sim_rf <- confusionMatrix(meta_results$rf_class, meta_results$Group, mode = "everything")
+CM_sim_bo <- confusionMatrix(meta_results$boost_class, meta_results$Group, mode = "everything")
+
+CM_sim <- c(CM_sim_log$byClass[7], CM_sim_svm$byClass[7], CM_sim_rf$byClass[7],CM_sim_bo$byClass[7])
+
+meta_plot <- tibble(
+  engine = c("Log_Reg", "Ran_For", "Boo_Tre", "Vec_Mac"),
+  accuracy = c(logi_pred_meta[3], randomforest_pred_meta[3], boost_pred_meta[3], vectormachine_pred_meta [3]),
+  kappa = c(logi_pred_meta[4], randomforest_pred_meta[4], boost_pred_meta[4], vectormachine_pred_meta [4])
+) %>% 
+  mutate(F1 = CM_sim)
+
+```
+
+```{r base results}
+
+base_results <- test_base_s %>%
+as_tibble() %>%
+  mutate(
+    log_class = predict(base_stan, new_data = test_base_s) %>% 
+      pull(.pred_class),
+    log_prob =  predict(base_stan, new_data = test_base_s, type = "prob") %>%
+      pull(.pred_SZ),
+svm_class = predict(base_svm, new_data = test_base_s) %>%
+  pull(.pred_class),
+svm_prob = predict(base_svm, new_data = test_base_s, type = "prob") %>% 
+  pull(.pred_SZ),
+rf_class = predict (base_rf, new_data = test_base_s) %>% 
+  pull(.pred_class),
+rf_prob = predict(base_rf, new_data = test_base_s, type = "prob") %>% 
+pull(.pred_SZ),
+boost_class = predict(base_boost, new_data = test_base_s) %>%
+  pull(.pred_class),
+boost_prob = predict(base_boost, new_data = test_base_s, type = "prob") %>%
+  pull(.pred_SZ)
+)
+
+logi_pred_base <- metrics(base_results, truth = Group, estimate = log_class) %>% 
+  knitr::kable()
+vectormachine_pred_base <- metrics(base_results, truth = Group, estimate = svm_class) %>% 
+  knitr::kable()
+randomforest_pred_base <- metrics(base_results, truth = Group, estimate = rf_class) %>% 
+  knitr::kable()
+boost_pred_base<- metrics(base_results, truth = Group, estimate = boost_class) %>% 
+  knitr::kable()
+
+CM_sim_log <- confusionMatrix(base_results$log_class, base_results$Group, mode = "everything")
+CM_sim_svm <- confusionMatrix(base_results$svm_class, base_results$Group, mode = "everything")
+CM_sim_rf <- confusionMatrix(base_results$rf_class, base_results$Group, mode = "everything")
+CM_sim_bo <- confusionMatrix(base_results$boost_class, base_results$Group, mode = "everything")
+
+CM_sim <- c(CM_sim_log$byClass[7], CM_sim_svm$byClass[7], CM_sim_rf$byClass[7],CM_sim_bo$byClass[7])
+
+base_plot <- tibble(
+  engine = c("Log_Reg", "Ran_For", "Boo_Tre", "Vec_Mac"),
+  accuracy = c(logi_pred_base[3], randomforest_pred_base[3], boost_pred_base[3], vectormachine_pred_base[3]),
+  kappa = c(logi_pred_base[4], randomforest_pred_base[4], boost_pred_base[4], vectormachine_pred_base[4])
+) %>% 
+  mutate(F1 = CM_sim)
+```
+
+
+```{r}
+
+meta_plot <- meta_plot %>% 
+  mutate(accuracy = parse_number(accuracy),
+         kappa = parse_number(kappa)
+         )
+
+base_plot <- base_plot %>% 
+  mutate(accuracy = parse_number(accuracy),
+         kappa = parse_number(kappa)
+         )
+
+plot_df <- rbind(meta_plot, base_plot)
+plot_df <- plot_df %>% 
+  mutate(ID = rep(c("Meta", "Base"), each = 4))
+
+ggplot(plot_df, aes(engine, F1, color = ID))+
+  geom_point(size = 5)+
+  xlab("Engine")+
+  ylab("F1-score")+
+  ggtitle("F1-score for the different engines")
+
+```
+
+
+
+```{r}
+
+```
+
+
+## Part III - Applying the ML pipeline to empirical data
+
+Download the empirical dataset from brightspace and apply your ML pipeline to the new data, adjusting where needed. Warning: in the simulated dataset we only had 10 features, now you have many more! Such is the life of the ML practitioner. Consider the impact a higher number of features will have on your ML inference, and decide whether you need to cut down the number of features before running the pipeline (or alternatively expand the pipeline to add feature selection).
+
+Data: https://www.dropbox.com/s/7ky1axvea33lgye/Ass3_empiricalData1.csv?dl=0
+
+```{r}
+d<-read_csv('Ass3_empiricalData1.csv')
+
+```
+
+
+```{r}
+set.seed(1)
+# Split data by Diagnosis
+d_scz <- d %>% 
+  filter(Diagnosis != "CT")
+
+d_ct <- d %>% 
+  filter(Diagnosis != "SCZ") 
+  
+test_emp_ct <- d_ct[d_ct$PatID %in% sample(unique(d_ct$PatID), 23),]  
+train_emp_ct <- d_ct[!d_ct$PatID %in% sample(unique(d_ct$PatID), 23),]  
+
+
+test_emp_scz <- d_scz[d_scz$PatID %in% sample(unique(d_scz$PatID), 18),]  
+train_emp_scz <- d_scz[!d_scz$PatID %in% sample(unique(d_scz$PatID), 18),]  
+
+test_emp <- rbind(test_emp_ct, test_emp_scz)
+train_emp <- rbind(train_emp_ct, train_emp_scz)
+
+# NB. Are we splitting ideally?
+
+```
+
+```{r PRE_PROCESSING}
+
+rec_emp <- train_emp %>% 
+  recipe(Diagnosis ~ . ) %>% 
+  step_scale(all_numeric() ) %>% 
+  step_center(all_numeric() ) %>% 
+  prep(training = train_emp, retain = TRUE)
+
+
+train_emp_s <- juice(rec_emp)
+test_emp_s <- bake(rec_emp, new_data = test_emp)
+
+
+```
+
+```{r}
+
+train_emp_f <- train_emp_s[-c(1:6)] %>% 
+  mutate( Diagnosis = as.factor(Diagnosis))
+
+pacman::p_load(rstanarm, randomForest, xgboost, kernlab, dplyr)
+
+emp_stan <- logistic_reg() %>% 
+  set_mode("classification") %>% 
+  set_engine("glm") %>% 
+  fit(Diagnosis ~ . , data = train_emp_f)
+
+emp_rf <- rand_forest() %>%   
+  set_mode("classification") %>% 
+  set_engine("randomForest") %>% 
+  fit(Diagnosis ~ . , data = train_emp_f)
+
+emp_boost <- boost_tree() %>% 
+  set_mode("classification") %>% 
+  set_engine("xgboost") %>% 
+  fit(Diagnosis ~ . , data = train_emp_f)
+
+emp_svm <- svm_rbf() %>% 
+  set_mode("classification") %>% 
+  set_engine("kernlab") %>% 
+  fit(Diagnosis ~ . , data = train_emp_f)
+```
+
+
+```{r}
+emp_results <- test_emp_s %>%
+as_tibble() %>%
+  mutate(
+    log_class = predict(emp_stan, new_data = test_emp_s) %>% 
+      pull(.pred_class),
+    log_prob =  predict(emp_stan, new_data = test_emp_s, type = "prob") %>%
+      pull(.pred_SCZ),
+svm_class = predict(emp_svm, new_data = test_emp_s) %>%
+  pull(.pred_class),
+svm_prob = predict(emp_svm, new_data = test_emp_s, type = "prob") %>% 
+  pull(.pred_SCZ),
+rf_class = predict (emp_rf, new_data = test_emp_s) %>% 
+  pull(.pred_class),
+rf_prob = predict(emp_rf, new_data = test_emp_s, type = "prob") %>% 
+pull(.pred_SCZ),
+boost_class = predict(emp_boost, new_data = test_emp_s) %>%
+  pull(.pred_class),
+boost_prob = predict(emp_boost, new_data = test_emp_s, type = "prob") %>%
+  pull(.pred_SCZ)
+)
+
+
+logi_pred_emp <- metrics(emp_results, truth = Diagnosis, estimate = log_class) %>% 
+  knitr::kable()
+svm_pred_emp <- metrics(emp_results, truth = Diagnosis, estimate = svm_class) %>% 
+  knitr::kable()
+rf_pred_emp <- metrics(emp_results, truth = Diagnosis, estimate = rf_class) %>% 
+  knitr::kable()
+boost_pred_emp <- metrics(emp_results, truth = Diagnosis, estimate = boost_class) %>% 
+  knitr::kable()
+
+CM_sim_log <- confusionMatrix(emp_results$log_class, emp_results$Diagnosis, mode = "everything")
+CM_sim_svm <- confusionMatrix(emp_results$svm_class, emp_results$Diagnosis, mode = "everything")
+CM_sim_rf <- confusionMatrix(emp_results$rf_class, emp_results$Diagnosis, mode = "everything")
+CM_sim_bo <- confusionMatrix(emp_results$boost_class, emp_results$Diagnosis, mode = "everything")
+
+CM_sim <- c(CM_sim_log$byClass[7], CM_sim_svm$byClass[7], CM_sim_rf$byClass[7],CM_sim_bo$byClass[7])
+
+emp_plot <- tibble(
+  engine = c("Log_Reg", "Ran_For", "Boo_Tre", "Vec_Mac"),
+  accuracy = c(logi_pred_emp[3], rf_pred_emp[3], boost_pred_emp[3], svm_pred_emp[3]),
+  kappa = c(logi_pred_emp[4], rf_pred_emp[4], boost_pred_emp[4], svm_pred_emp[4])
+) %>% 
+  mutate(F1 = CM_sim)
+```
+
+
+```{r PLOT}
+
+emp_plot <- emp_plot %>% 
+  mutate(accuracy = parse_number(accuracy),
+         kappa = parse_number(kappa)
+         )
+
+ggplot(emp_plot, aes(engine, accuracy))+
+  geom_point(size = 5)
+
+ggplot(emp_plot, aes(engine, kappa))+
+  geom_point(size = 5)
+
+ggplot(emp_plot, aes(engine, F1))+
+  geom_point(size = 5)
+```
+
+```{r FEATURE SELECTION WITH PCA}
+d<-read_csv('Ass3_empiricalData1.csv')
+
+####DATASET IS NOW PREPARED FOR SPLIT AND TRAINING
+
+set.seed(123)
+pca_rec_j <- d %>% 
+  mutate(ID = 1:length(Diagnosis))
+
+# Split data by Diagnosis
+d_scz <- pca_rec_j %>% 
+  filter(Diagnosis != "CT")
+
+d_ct <- pca_rec_j %>% 
+  filter(Diagnosis != "SCZ") 
+  
+test_emp_ct <- d_ct[d_ct$ID %in% sample(unique(d_ct$ID), 162),]  
+train_emp_ct <- d_ct[!d_ct$ID %in% sample(unique(d_ct$ID), 162),]  
+
+
+test_emp_scz <- d_scz[d_scz$ID %in% sample(unique(d_scz$ID), 148),]  
+train_emp_scz <- d_scz[!d_scz$ID %in% sample(unique(d_scz$ID), 148),]  
+
+test_emp_pca <- rbind(test_emp_ct, test_emp_scz)
+train_emp_pca <- rbind(train_emp_ct, train_emp_scz)
+
+
+#Prepping
+train_emp_pca<-train_emp_pca %>% 
+  select(Diagnosis, Duration_Praat:MeanTurnDur_Praat)
+
+
+PCA<-function(nums) {
+pca_rec <- recipe(~., data = train_emp_pca) %>%
+  update_role(Diagnosis, new_role = "id") %>%
+  step_normalize(all_predictors()) %>%
+  step_pca(all_numeric_predictors(), num_comp = nums)
+
+pca_prep <- prep(pca_rec, training = train_emp_pca)
+pca_rec_j <- juice(pca_prep)
+
+test_emp_s <- bake(pca_prep, new_data = test_emp)
+
+
+## NOW THE DATA IS PREPROCESSED!
+
+#Training a model
+pca_rec_m <- svm_rbf() %>% 
+  set_mode("classification") %>% 
+  set_engine("kernlab") %>% 
+  fit(Diagnosis ~ . , data = pca_rec_j)
+
+
+pca_res <- test_emp_s %>%
+as_tibble() %>%
+  mutate(
+svm_class = predict(pca_rec_m, new_data = test_emp_s) %>%
+  pull(.pred_class),
+svm_prob = predict(pca_rec_m, new_data = test_emp_s, type = "prob") %>% 
+  pull(.pred_SCZ)
+)
+
+svm_pred_emp <- metrics(pca_res, truth = Diagnosis, estimate = svm_class) %>% 
+  knitr::kable()
+
+
+pacman::p_load(caret)
+
+CM<-confusionMatrix(pca_res$svm_class, pca_res$Diagnosis, mode = "everything")
+
+#Reading off
+emp_plot <- tibble(
+  id = nums,
+  engine = c("Vec_Mac"),
+  accuracy = c(svm_pred_emp[3]),
+  kappa = c(svm_pred_emp[4])
+) %>% 
+  mutate(F1 = CM$byClass[7])
+
+return(emp_plot)
+}
+
+emp_plot<-rbind(PCA(5),PCA(7),PCA(10),PCA(15),PCA(20), PCA(30), PCA(40), PCA(50))
+
+
+emp_plot <- emp_plot %>% 
+  mutate(accuracy = parse_number(accuracy),
+         kappa = parse_number(kappa)
+         )
+
+
+ggplot(emp_plot, aes(id,F1,colour = kappa))+
+  geom_point(size = 5)+
+  xlab("Number of PC")+
+  ylab("F1-score")+
+  ggtitle("F1-scores dependent on the number of PC's using the svm-engine")
+
+tidied_pca <- tidy(pca_prep, 2)
+library(tidymodels, tidytext)
+
+pacman::p_load(tidytext)
+
+tidied_pca %>%
+  filter(component %in% paste0("PC", 1:5)) %>%
+  group_by(component) %>%
+  top_n(10, abs(value)) %>%
+  ungroup() %>%
+  mutate(terms = reorder_within(terms, abs(value), component)) %>%
+  ggplot(aes(abs(value), terms, fill = value > 0)) +
+  geom_col() +
+  facet_wrap(~component, scales = "free_y") +
+  scale_y_reordered() +
+  labs(
+    x = "Absolute value of contribution",
+    y = NULL, fill = "Positive?"
+  )
+
+```
+
+```{r}
+
+juice(pca_prep) %>%
+  ggplot(aes(PC1, PC2, label = Diagnosis)) +
+  geom_point(aes(color = Diagnosis), alpha = 0.7, size = 2) +
+  geom_text(check_overlap = TRUE, hjust = "inward", family = "IBMPlexSans") +
+  labs(color = NULL)
+```
+
